@@ -26,7 +26,9 @@
 #define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN
 #define ED_KEEP_ALIVE 3000
 #define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1
-#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
+//#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
+#define ESP_ZB_PRIMARY_CHANNEL_MASK (1 << 11)
+#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID 0x0020
 
 // Automotive voltage thresholds (in volts)
 #define LOW_VOLTAGE_THRESHOLD 11.5f
@@ -40,11 +42,6 @@ static bool do_calibration = false;
 static float current_voltage = 0.0f;
 static uint8_t voltage_alarm_state = 0; // 0=OK, 1=LOW, 2=HIGH, 3=CRITICAL
 
-// Zigbee attribute IDs (custom cluster)
-#define ESP_ZB_ZCL_CLUSTER_ID_VOLTAGE_MEASUREMENT 0xFC00
-#define ESP_ZB_ZCL_ATTR_VOLTAGE_MEASUREMENT_VALUE 0x0000
-#define ESP_ZB_ZCL_ATTR_VOLTAGE_ALARM_STATE 0x0001
-
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 {
     uint32_t *p_sg_p = signal_struct->p_app_signal;
@@ -54,6 +51,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Zigbee stack initialized");
+        ESP_LOGI(TAG, "Primary channel mask: 0x%08x", (unsigned int)ESP_ZB_PRIMARY_CHANNEL_MASK);
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
@@ -62,39 +60,37 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "Device started up in %s factory-reset mode",
                      esp_zb_bdb_is_factory_new() ? "" : "non");
             if (esp_zb_bdb_is_factory_new()) {
-                ESP_LOGI(TAG, "Start network formation");
-                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_FORMATION);
+                ESP_LOGI(TAG, "Start network steering (joining network)");
+                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             } else {
-                ESP_LOGI(TAG, "Device rebooted");
+                ESP_LOGI(TAG, "Device rebooted, rejoining network");
+                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             }
+            ESP_LOGI(TAG, "PAN ID: 0x%04hx, Channel: %d", esp_zb_get_pan_id(), esp_zb_get_current_channel());
         } else {
-            ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s)", esp_err_to_name(err_status));
-        }
-        break;
-    case ESP_ZB_BDB_SIGNAL_FORMATION:
-        if (err_status == ESP_OK) {
-            esp_zb_ieee_addr_t extended_pan_id;
-            esp_zb_get_extended_pan_id(extended_pan_id);
-            ESP_LOGI(TAG, "Formed network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d)",
-                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
-                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
-                     esp_zb_get_pan_id(), esp_zb_get_current_channel());
-            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-        } else {
-            ESP_LOGI(TAG, "Restart network formation (status: %s)", esp_err_to_name(err_status));
-            // Simple retry without using deprecated scheduler
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_FORMATION);
+            ESP_LOGE(TAG, "Failed to initialize Zigbee stack (status: %s, code: 0x%x)", esp_err_to_name(err_status), err_status);
         }
         break;
     case ESP_ZB_BDB_SIGNAL_STEERING:
         if (err_status == ESP_OK) {
-            ESP_LOGI(TAG, "Network steering started");
+            ESP_LOGI(TAG, "Successfully joined network");
+            esp_zb_ieee_addr_t extended_pan_id;
+            esp_zb_get_extended_pan_id(extended_pan_id);
+            ESP_LOGI(TAG, "Joined network (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d)",
+                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
+                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
+                     esp_zb_get_pan_id(), esp_zb_get_current_channel());
+        } else {
+            ESP_LOGI(TAG, "Network steering failed (status: %s), retrying in 1 second...", esp_err_to_name(err_status));
+            // Simple retry without deprecated scheduler - will be handled by task
         }
         break;
+    case ESP_ZB_ZDO_SIGNAL_LEAVE:
+        ESP_LOGI(TAG, "Leave network");
+        break;
     default:
-        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type,
-                 esp_err_to_name(err_status));
+        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s, code: 0x%x", esp_zb_zdo_signal_to_string(sig_type), sig_type,
+                 esp_err_to_name(err_status), err_status);
         break;
     }
 }
@@ -258,9 +254,9 @@ static void update_voltage_alarm_state(float voltage)
                  (new_state == 1) ? "LOW" :
                  (new_state == 2) ? "HIGH" : "CRITICAL");
 
-        // Update Zigbee attribute
-        esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_VOLTAGE_MEASUREMENT,
-                                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_VOLTAGE_ALARM_STATE,
+        // Update occupancy sensor attribute to indicate alarm state
+        esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
+                                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
                                     &voltage_alarm_state, false);
     }
 }
@@ -275,22 +271,34 @@ static void voltage_measurement_task(void *pvParameters)
         // Update alarm state
         update_voltage_alarm_state(current_voltage);
 
-        // Convert voltage to centivolt for Zigbee (standard practice)
-        uint16_t voltage_centivolt = (uint16_t)(current_voltage * 100);
-
-        // Update Zigbee attribute
-        esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_VOLTAGE_MEASUREMENT,
-                                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_VOLTAGE_MEASUREMENT_VALUE,
-                                    &voltage_centivolt, false);
+    // Update Zigbee attribute - using Power Configuration cluster (BatteryVoltage, tenths of a volt)
+    uint8_t battery_voltage_zb = (uint8_t)(current_voltage * 10.0f); // Zigbee expects tenths of a volt
+    esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+                    &battery_voltage_zb, false);
 
         vTaskDelay(pdMS_TO_TICKS(MEASUREMENT_INTERVAL_MS));
     }
 }
 
+static bool zigbee_join_retry = true;
+
+static void zigbee_retry_task(void *pvParameters)
+{
+    while (zigbee_join_retry) {
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Wait 10 seconds between retries
+        if (zigbee_join_retry) {
+            ESP_LOGI(TAG, "Attempting to rejoin network...");
+            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 static void esp_zb_task(void *pvParameters)
 {
     esp_zb_cfg_t zb_nwk_cfg = {
-        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,  // End Device - will join existing network
         .install_code_policy = INSTALLCODE_POLICY_ENABLE,
         .nwk_cfg = {
             .zed_cfg = {
@@ -301,24 +309,52 @@ static void esp_zb_task(void *pvParameters)
     };
     esp_zb_init(&zb_nwk_cfg);
 
-    // Create custom voltage measurement cluster
+    // Enable more detailed Zigbee logging
+    esp_log_level_set("ESP_ZB", ESP_LOG_DEBUG);
+    esp_log_level_set("ESP_ZB_ZCL", ESP_LOG_DEBUG);
+    esp_log_level_set("ESP_ZB_ZDO", ESP_LOG_DEBUG);
+    
+    ESP_LOGI(TAG, "Zigbee stack initialized with role: End Device");
+    ESP_LOGI(TAG, "Install code policy: %s", INSTALLCODE_POLICY_ENABLE ? "enabled" : "disabled");
+    ESP_LOGI(TAG, "Channel mask: 0x%08x", (unsigned int)ESP_ZB_PRIMARY_CHANNEL_MASK);
+
+    // Create cluster list with standard Zigbee clusters
     esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
 
-    esp_zb_attribute_list_t *voltage_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_VOLTAGE_MEASUREMENT);
+    // Basic cluster (mandatory for all devices)
+    esp_zb_attribute_list_t *basic_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
+    uint8_t zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE;
+    uint8_t power_source = 0x01; // Mains (single phase)
+    char manufacturer_name[] = "Espressif";
+    char model_identifier[] = "ESP.VOLTMETER";
+    char sw_version[] = "1.0.0";
+    
+    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_ZCL_VERSION_ID, &zcl_version);
+    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, &power_source);
+    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer_name);
+    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_identifier);
+    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_version);
+    esp_zb_cluster_list_add_basic_cluster(esp_zb_cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    uint16_t voltage_value = 1200; // Initial value (12.00V)
-    uint8_t alarm_state = 0;       // Initial state (OK)
+    // Identify cluster (mandatory for Home Automation)
+    esp_zb_attribute_list_t *identify_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY);
+    uint16_t identify_time = 0;
+    esp_zb_identify_cluster_add_attr(identify_cluster, ESP_ZB_ZCL_ATTR_IDENTIFY_IDENTIFY_TIME_ID, &identify_time);
+    esp_zb_cluster_list_add_identify_cluster(esp_zb_cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    // Add custom attributes to custom cluster
-    esp_zb_custom_cluster_add_custom_attr(voltage_cluster, ESP_ZB_ZCL_ATTR_VOLTAGE_MEASUREMENT_VALUE,
-                                         ESP_ZB_ZCL_ATTR_TYPE_U16, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-                                         &voltage_value);
-    esp_zb_custom_cluster_add_custom_attr(voltage_cluster, ESP_ZB_ZCL_ATTR_VOLTAGE_ALARM_STATE,
-                                         ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-                                         &alarm_state);
+    // Power Configuration cluster for battery voltage reporting
+    esp_zb_attribute_list_t *power_config_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+    uint8_t battery_voltage = 120; // 12.0V (in tenths of a volt, as per Zigbee spec)
+    esp_zb_power_config_cluster_add_attr(power_config_cluster, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage);
+    esp_zb_cluster_list_add_power_config_cluster(esp_zb_cluster_list, power_config_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-    // Add custom cluster to cluster list
-    esp_zb_cluster_list_add_custom_cluster(esp_zb_cluster_list, voltage_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    // Occupancy Sensing cluster for alarm status
+    esp_zb_attribute_list_t *occupancy_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING);
+    uint8_t occupancy = 0;
+    uint8_t occupancy_sensor_type = 0; // PIR
+    esp_zb_occupancy_sensing_cluster_add_attr(occupancy_cluster, ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID, &occupancy);
+    esp_zb_occupancy_sensing_cluster_add_attr(occupancy_cluster, ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_SENSOR_TYPE_ID, &occupancy_sensor_type);
+    esp_zb_cluster_list_add_occupancy_sensing_cluster(esp_zb_cluster_list, occupancy_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     // Create endpoint list
     esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
@@ -335,6 +371,9 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
 
     ESP_ERROR_CHECK(esp_zb_start(false));
+
+    // Create retry task for failed joins
+    xTaskCreate(zigbee_retry_task, "zigbee_retry", 2048, NULL, 2, NULL);
 
     // Modern task loop instead of deprecated main loop iteration
     while (1) {
@@ -353,7 +392,15 @@ void app_main(void)
         },
     };
 
-    ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS corrupted or new version found, erasing...");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "NVS init result: %s", esp_err_to_name(ret));
+    
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     // Initialize ADC
@@ -364,8 +411,20 @@ void app_main(void)
     ESP_LOGI(TAG, "Low voltage threshold: %.1fV", LOW_VOLTAGE_THRESHOLD);
     ESP_LOGI(TAG, "High voltage threshold: %.1fV", HIGH_VOLTAGE_THRESHOLD);
     ESP_LOGI(TAG, "Critical low threshold: %.1fV", CRITICAL_LOW_THRESHOLD);
+    ESP_LOGI(TAG, "Device will attempt to join existing Zigbee network...");
 
+    // Set a static IEEE address for Zigbee (for testing)
+    uint8_t custom_ieee_addr[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x01};
+    esp_zb_set_long_address(custom_ieee_addr);
+
+    // Print IEEE address at startup
+    esp_zb_ieee_addr_t ieee_addr;
+    esp_zb_get_long_address(ieee_addr);
+    ESP_LOGI(TAG, "Device IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+        ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
+        ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
+    
     // Create tasks
-    xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    xTaskCreate(voltage_measurement_task, "voltage_measurement", 2048, NULL, 3, NULL);
+    xTaskCreate(esp_zb_task, "Zigbee_main", 8192, NULL, 5, NULL);
+    xTaskCreate(voltage_measurement_task, "voltage_measurement", 4096, NULL, 3, NULL);
 }
