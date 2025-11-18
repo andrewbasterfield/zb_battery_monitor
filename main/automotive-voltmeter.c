@@ -1,4 +1,6 @@
+// Includes for Zigbee, FreeRTOS, ADC, NVS, and logging
 #include "esp_zigbee_core.h"
+#include "zcl/esp_zigbee_zcl_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -6,152 +8,85 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "nvs_flash.h"
-#include "esp_check.h"
 
+#include "zigbee-protocol.h"
+
+// --- Constants and Configuration ---
+
+// Tag for logging
 #define TAG "AUTOMOTIVE_VOLTMETER"
 
-// Hardware configuration
-#define VOLTAGE_DIVIDER_CHANNEL ADC_CHANNEL_0  // GPIO0
-#define SAMPLE_COUNT 64
-#define MEASUREMENT_INTERVAL_MS 5000
+#define MANUFACTURER_NAME "\x09""ESPRESSIF"
+#define MODEL_IDENTIFIER "\x07" CONFIG_IDF_TARGET
 
-// Voltage divider configuration (adjust based on your resistor values)
-// For 12V automotive system, use voltage divider to scale down to ESP32 range
-// Example: R1=47kΩ, R2=10kΩ gives ratio of 5.7:1 (max ~16.4V input for 3.3V ADC)
-#define VOLTAGE_DIVIDER_RATIO 5.7f
-#define ADC_VREF 3300  // mV
+// --- Simulation Configuration ---
+// Set to 1 to use simulated voltage for testing, 0 to use the real ADC.
+#define USE_SIMULATED_VOLTAGE 1
 
-// Zigbee configuration
-#define INSTALLCODE_POLICY_ENABLE false
-#define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN
-#define ED_KEEP_ALIVE 3000
-#define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1
-#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK
+// --- Hardware Configuration ---
+#define VOLTAGE_DIVIDER_CHANNEL ADC_CHANNEL_0  // ADC channel connected to the voltage divider (GPIO0)
+#define SAMPLE_COUNT 64                        // Number of ADC samples to average for each measurement
+#define MEASUREMENT_INTERVAL_MS 5000           // Interval between voltage measurements in milliseconds
+
+// --- Voltage Divider Configuration ---
+// Adjust these values based on the resistors used in the voltage divider circuit.
+// The goal is to scale the automotive voltage (e.g., 0-16V) down to the ESP32's ADC input range (e.g., 0-3.3V).
+// Example: R1=47kΩ, R2=10kΩ -> Ratio = (R1+R2)/R2 = 57k/10k = 5.7
+#define VOLTAGE_DIVIDER_RATIO 5.7f // The division ratio of the voltage divider circuit
+#define ADC_VREF 3300              // ADC reference voltage in millivolts
+
+// --- Zigbee Configuration ---
+#define INSTALLCODE_POLICY_ENABLE false // Set to true to enable install code policy for joining, false to disable
+#define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN // Timeout for end device to be considered aged out by parent
+#define ED_KEEP_ALIVE 3000              // Keep-alive interval for end device in milliseconds
+#define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1 // Zigbee endpoint for this device
+#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK // Scan all channels to find a network
+
+// ZCL Attribute IDs for the Power Configuration Cluster
 #define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID 0x0020
 #define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID 0x0021
 #define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID 0x0035
 #define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID 0x0036
 
-// Automotive voltage thresholds (in volts)
-#define LOW_VOLTAGE_THRESHOLD 11.5f
-#define HIGH_VOLTAGE_THRESHOLD 14.8f
-#define CRITICAL_LOW_THRESHOLD 10.5f
+// --- Automotive Voltage Thresholds ---
+// These thresholds define the different voltage states (in volts).
+#define LOW_VOLTAGE_THRESHOLD 12.1f    // Below this, voltage is considered "low"
+#define HIGH_VOLTAGE_THRESHOLD 14.8f   // Above this, voltage is considered "high" (e.g., alternator overcharging)
+#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.8f // Below this, voltage is critically low
 
-// Global variables
-static adc_oneshot_unit_handle_t adc1_handle;
-static adc_cali_handle_t adc1_cali_handle = NULL;
-static bool do_calibration = false;
-static float current_voltage = 0.0f;
-static uint8_t voltage_alarm_state = 0; // 0=OK, 1=LOW, 2=HIGH, 3=CRITICAL
-static bool zigbee_join_retry = true;
-static QueueHandle_t voltage_queue;
+// --- Global Variables ---
+static adc_oneshot_unit_handle_t adc1_handle;      // Handle for the ADC one-shot unit
+static adc_cali_handle_t adc1_cali_handle = NULL;  // Handle for ADC calibration data
+static bool do_calibration = false;                // Flag indicating if ADC calibration is available and should be used
+static float current_voltage = 0.0f;               // Stores the most recently measured voltage
+static uint8_t voltage_alarm_state = 0;            // Current alarm state: 0=OK, 1=LOW, 2=HIGH, 3=CRITICAL
 
-void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
-{
-    uint32_t *p_sg_p = signal_struct->p_app_signal;
-    esp_err_t err_status = signal_struct->esp_err_status;
-    esp_zb_app_signal_type_t sig_type = *p_sg_p;
+static QueueHandle_t voltage_queue;                // FreeRTOS queue to pass voltage readings from measurement task to main loop
+#if USE_SIMULATED_VOLTAGE
+static float simulated_voltage = 14.0f;            // Global variable for voltage simulation
+#endif
 
-    switch (sig_type) {
-    case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-        ESP_LOGI(TAG, "Zigbee stack initialized");
-        ESP_LOGI(TAG, "Primary channel mask: 0x%08x", (unsigned int)ESP_ZB_PRIMARY_CHANNEL_MASK);
-        esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
-        break;
-    case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
-        if (err_status == ESP_OK) {
-            ESP_LOGI(TAG, "Device started up in %s factory-reset mode",
-                     esp_zb_bdb_is_factory_new() ? "" : "non");
-            if (esp_zb_bdb_is_factory_new()) {
-                ESP_LOGI(TAG, "Factory new device - starting network steering");
-                ESP_LOGI(TAG, "Start network steering (joining network)");
-                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-            } else {
-                ESP_LOGI(TAG, "Non-factory device - attempting to rejoin network");
-                ESP_LOGI(TAG, "Device rebooted, rejoining network");
-                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-            }
-            ESP_LOGI(TAG, "PAN ID: 0x%04hx, Channel: %d", esp_zb_get_pan_id(), esp_zb_get_current_channel());
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize Zigbee stack (status: %s, code: 0x%x)", esp_err_to_name(err_status), err_status);
-            ESP_LOGE(TAG, "Stack initialization error - device may need reset");
-        }
-        break;
-    case ESP_ZB_BDB_SIGNAL_STEERING:
-        if (err_status == ESP_OK) {
-            ESP_LOGI(TAG, "Successfully joined network");
-            zigbee_join_retry = false; // Stop retrying after successful join
-            esp_zb_ieee_addr_t extended_pan_id;
-            esp_zb_get_extended_pan_id(extended_pan_id);
-            ESP_LOGI(TAG, "Joined network (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d)",
-                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
-                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
-                     esp_zb_get_pan_id(), esp_zb_get_current_channel());
-        } else {
-            ESP_LOGI(TAG, "Network steering failed (status: %s), retrying in 1 second...", esp_err_to_name(err_status));
-            // Simple retry without deprecated scheduler - will be handled by task
-        }
-        break;
-    case ESP_ZB_ZDO_SIGNAL_LEAVE:
-        ESP_LOGI(TAG, "Leave network");
-        break;
-    default:
-        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s, code: 0x%x", esp_zb_zdo_signal_to_string(sig_type), sig_type,
-                 esp_err_to_name(err_status), err_status);
-        break;
-    }
-}
 
-static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
-{
-    esp_err_t ret = ESP_OK;
-    ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
-    ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
-                        message->info.status);
-
-    ESP_LOGI(TAG, "Received ZCL attribute(0x%x) set to cluster(0x%x)",
-             message->attribute.id, message->info.cluster);
-
-    return ret;
-}
-
-static esp_err_t zb_read_attr_resp_handler(const esp_zb_zcl_cmd_read_attr_resp_message_t *message)
-{
-    ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
-    ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
-                        message->info.status);
-
-    ESP_LOGI(TAG, "Read attribute response: cluster(0x%x), attribute(0x%x), type(0x%x), value(%d)",
-             message->info.cluster, message->variables->attribute.id, message->variables->attribute.data.type,
-             message->variables->attribute.data.value ? *(uint8_t*)message->variables->attribute.data.value : 0);
-
-    return ESP_OK;
-}
-
-static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
-{
-    esp_err_t ret = ESP_OK;
-    switch (callback_id) {
-    case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
-        ret = zb_attribute_handler((esp_zb_zcl_set_attr_value_message_t *)message);
-        break;
-    case ESP_ZB_CORE_CMD_READ_ATTR_RESP_CB_ID:
-        ret = zb_read_attr_resp_handler((esp_zb_zcl_cmd_read_attr_resp_message_t *)message);
-        break;
-    default:
-        ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
-        break;
-    }
-    return ret;
-}
-
+/**
+ * @brief Initializes the ADC calibration scheme.
+ *
+ * This function attempts to create a calibration scheme for the ADC to improve
+ * measurement accuracy. It tries different calibration methods supported by the hardware
+ * (Curve Fitting, Line Fitting).
+ *
+ * @param unit The ADC unit to calibrate.
+ * @param channel The ADC channel to calibrate.
+ * @param atten The ADC attenuation to use for calibration.
+ * @param out_handle Pointer to store the resulting calibration handle.
+ * @return true if calibration was successful, false otherwise.
+ */
 static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
 {
     adc_cali_handle_t handle = NULL;
     esp_err_t ret = ESP_FAIL;
     bool calibrated = false;
 
+    // Attempt to use Curve Fitting calibration if supported.
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     if (!calibrated) {
         ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
@@ -168,6 +103,7 @@ static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_att
     }
 #endif
 
+    // Attempt to use Line Fitting calibration if supported and Curve Fitting failed.
 #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
     if (!calibrated) {
         ESP_LOGI(TAG, "calibration scheme version is %s", "Line Fitting");
@@ -195,65 +131,116 @@ static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_att
     return calibrated;
 }
 
+/**
+ * @brief Initializes the ADC for voltage measurement.
+ *
+ * This function configures the ADC one-shot unit and the specific channel
+ * used for reading the voltage. It also initializes ADC calibration.
+ */
 static void adc_init(void)
 {
     //-------------ADC1 Init---------------//
+    // Configure the ADC unit.
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
     };
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
 
     //-------------ADC1 Config---------------//
+    // Configure the ADC channel, setting bitwidth and attenuation.
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN_DB_12,
+        .atten = ADC_ATTEN_DB_12, // 12dB attenuation provides a measurement range of ~0-3.1V.
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, VOLTAGE_DIVIDER_CHANNEL, &config));
 
     //-------------ADC1 Calibration Init---------------//
+    // Initialize calibration for the configured ADC unit and channel.
     do_calibration = adc_calibration_init(ADC_UNIT_1, VOLTAGE_DIVIDER_CHANNEL, ADC_ATTEN_DB_12, &adc1_cali_handle);
 }
 
+/**
+ * @brief Reads the battery voltage from the ADC or returns a simulated value.
+ *
+ * FOR DEVELOPMENT: This function can return a simulated voltage to allow testing
+ * without physical hardware. To use the real ADC, set USE_SIMULATED_VOLTAGE to 0.
+ *
+ * @return The calculated or simulated battery voltage as a float.
+ */
 static float read_battery_voltage(void)
 {
+#if USE_SIMULATED_VOLTAGE
+    // --- SIMULATED VOLTAGE (for testing) ---
+    // This block cycles the voltage through high, normal, low, and critical states.
+    simulated_voltage -= 0.5f;
+    if (simulated_voltage < 11.5f) {
+        simulated_voltage = 15.0f; // Reset to a high voltage
+    }
+    ESP_LOGI(TAG, "Using simulated voltage: %.2f V", simulated_voltage);
+    return simulated_voltage;
+#else
+    // --- REAL ADC READING ---
     uint32_t adc_reading = 0;
     int adc_raw;
 
-    // Multi-sample for accuracy
+    // Take multiple samples and average them for better accuracy.
     for (int i = 0; i < SAMPLE_COUNT; i++) {
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, VOLTAGE_DIVIDER_CHANNEL, &adc_raw));
         adc_reading += adc_raw;
     }
     adc_reading /= SAMPLE_COUNT;
 
-    // Convert ADC reading to voltage
+    // Convert the ADC reading to millivolts.
     int voltage_mv = 0;
     if (do_calibration) {
+        // Use the calibration data if available for a more accurate conversion.
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, adc_reading, &voltage_mv));
     } else {
-        // Fallback calculation without calibration
-        voltage_mv = (adc_reading * ADC_VREF) / 4095; // 12-bit ADC
+        // Fallback to a simple linear calculation if no calibration is available.
+        voltage_mv = (adc_reading * ADC_VREF) / 4095; // For a 12-bit ADC.
     }
 
-    // Apply voltage divider ratio to get actual battery voltage
+    // Apply the voltage divider ratio to get the actual battery voltage.
     float battery_voltage = (voltage_mv * VOLTAGE_DIVIDER_RATIO) / 1000.0f;
 
     return battery_voltage;
+#endif
 }
 
+/**
+ * @brief FreeRTOS task for periodic voltage measurement.
+ *
+ * This task continuously reads the battery voltage at a fixed interval
+ * (`MEASUREMENT_INTERVAL_MS`) and sends the result to the `voltage_queue`.
+ *
+ * @param pvParameters Unused task parameters.
+ */
 static void voltage_measurement_task(void *pvParameters)
 {
     while (1) {
         current_voltage = read_battery_voltage();
+        // Send the measured voltage to the main loop via a queue.
         xQueueSend(voltage_queue, &current_voltage, 0);
+        // Wait for the next measurement interval.
         vTaskDelay(pdMS_TO_TICKS(MEASUREMENT_INTERVAL_MS));
     }
 }
 
+// --- Zigbee Device Mode ---
+// Set to 1 to configure the device as a Zigbee Router, 0 for an End Device.
+// Routers can relay messages for other devices but consume more power.
+// End Devices are low-power and sleep, but cannot relay messages.
 #define ROUTER_MODE 0
 
+/**
+ * @brief Main application entry point.
+ *
+ * This function initializes all necessary components (NVS, ADC, Zigbee stack)
+ * and contains the main application loop.
+ */
 void app_main(void)
 {
+    // --- Platform and NVS Initialization ---
     esp_zb_platform_config_t platform_config = {
         .radio_config = {
             .radio_mode = ZB_RADIO_MODE_NATIVE,
@@ -263,8 +250,10 @@ void app_main(void)
         },
     };
 
+    // Initialize Non-Volatile Storage (NVS) to store Zigbee network data.
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // If NVS is corrupted or has an old version, erase and re-initialize it.
         ESP_LOGW(TAG, "NVS corrupted or new version found, erasing...");
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
@@ -274,28 +263,29 @@ void app_main(void)
     
     ESP_ERROR_CHECK(esp_zb_platform_config(&platform_config));
 
-    // Initialize ADC
-    adc_init();
+    // --- Hardware and Logging Initialization ---
+    adc_init(); // Initialize the ADC.
 
     ESP_LOGI(TAG, "ESP32-H2 Automotive Voltmeter starting...");
     ESP_LOGI(TAG, "Voltage divider ratio: %.1f", VOLTAGE_DIVIDER_RATIO);
     ESP_LOGI(TAG, "Low voltage threshold: %.1fV", LOW_VOLTAGE_THRESHOLD);
     ESP_LOGI(TAG, "High voltage threshold: %.1fV", HIGH_VOLTAGE_THRESHOLD);
-    ESP_LOGI(TAG, "Critical low threshold: %.1fV", CRITICAL_LOW_THRESHOLD);
+    ESP_LOGI(TAG, "Critical low threshold: %.1fV", CRITICAL_LOW_VOLTAGE_THRESHOLD);
     ESP_LOGI(TAG, "Device will attempt to join existing Zigbee network...");
 
-    // Set a static IEEE address for Zigbee (for testing)
+    // --- Zigbee Stack Initialization ---
+    // Set a custom IEEE address for the device (useful for debugging and static identification).
     uint8_t custom_ieee_addr[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x01};
     esp_zb_set_long_address(custom_ieee_addr);
 
-    // Print IEEE address at startup
+    // Print the device's IEEE address at startup for identification.
     esp_zb_ieee_addr_t ieee_addr;
     esp_zb_get_long_address(ieee_addr);
     ESP_LOGI(TAG, "Device IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
         ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
         ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
     
-
+    // Configure the Zigbee device role (Router or End Device).
 #if ROUTER_MODE
     ESP_LOGI(TAG, "Configuring as Zigbee Router");
     esp_zb_cfg_t network_config = {
@@ -310,7 +300,7 @@ void app_main(void)
 #else
     ESP_LOGI(TAG, "Configuring as End Device");
     esp_zb_cfg_t network_config = {
-        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,  // End Device - will join existing network
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,  // End Device - sleeps to save power.
         .install_code_policy = INSTALLCODE_POLICY_ENABLE,
         .nwk_cfg = {
             .zed_cfg = {
@@ -323,7 +313,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing Zigbee stack...");
     esp_zb_init(&network_config);
 
-    // Enable more detailed Zigbee logging
+    // Enable more detailed Zigbee logging for debugging purposes.
     esp_log_level_set("ESP_ZB", ESP_LOG_DEBUG);
     esp_log_level_set("ESP_ZB_ZCL", ESP_LOG_DEBUG);
     esp_log_level_set("ESP_ZB_ZDO", ESP_LOG_DEBUG);
@@ -337,82 +327,102 @@ void app_main(void)
     ESP_LOGI(TAG, "Channel mask: 0x%08x", (unsigned int)ESP_ZB_PRIMARY_CHANNEL_MASK);
     ESP_LOGI(TAG, "ED timeout: %d, Keep alive: %d", ED_AGING_TIMEOUT, ED_KEEP_ALIVE);
 
-    // Create cluster list with standard Zigbee clusters
+    // --- Zigbee Cluster and Endpoint Configuration ---
+    // Create a list of clusters that this device will support.
     esp_zb_cluster_list_t *clusters = esp_zb_zcl_cluster_list_create();
 
-    // Basic cluster (mandatory for all devices)
+    // --- Basic Cluster (Server) ---
+    // This cluster provides basic information about the device.
     esp_zb_attribute_list_t *basic_cluster_attributes = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
     
     
-    // basic attributes
+    // Add mandatory basic cluster attributes.
     uint8_t zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE;
     ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_ZCL_VERSION_ID, &zcl_version));
 
 #if ROUTER_MODE
-    uint8_t power_source = 0x01; // Mains (single phase)
+    uint8_t power_source = 0x01; // Mains power
 #else
-    uint8_t power_source = 0x03; // Battery
+    uint8_t power_source = 0x03; // Battery power
 #endif
     ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, &power_source));
-    char manufacturer_name[] = "Espressif";
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer_name));
-    char model_identifier[] = "ESP.VOLTMETER";
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_identifier));
-    char sw_version[] = "1.0.0";
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_version));
+    
+    // Add optional attributes like manufacturer and model.
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, MANUFACTURER_NAME));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, MODEL_IDENTIFIER));
+    //char sw_version[] = "1.0.0";
+    //ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster_attributes, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_version));
 
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(clusters, basic_cluster_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
-    // Identify cluster (mandatory for Home Automation)
+    // --- Identify Cluster (Server) ---
+    // This cluster allows the device to be identified (e.g., by blinking an LED).
     esp_zb_attribute_list_t *identify_cluster_attributes = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY);
     uint16_t identify_time = 0;
     ESP_ERROR_CHECK(esp_zb_identify_cluster_add_attr(identify_cluster_attributes, ESP_ZB_ZCL_ATTR_IDENTIFY_IDENTIFY_TIME_ID, &identify_time));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(clusters, identify_cluster_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
-    // Power Configuration cluster for battery voltage reporting
+    // --- Power Configuration Cluster (Server) ---
+    // This cluster is used to report battery information.
     esp_zb_attribute_list_t *power_config_cluster_attributes = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
-    uint8_t battery_voltage = 120; // 12.0V (in tenths of a volt, as per Zigbee spec)
+
+    // Add attributes for battery voltage, percentage, alarm mask, and threshold.
+    uint8_t battery_voltage = 120; // Initial value (12.0V)
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage));
-    uint8_t battery_percent = 100; // 50%
+
+    uint8_t battery_percent = 100; // Initial value
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent));
-    
-    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &(uint8_t){0x00}));
-    uint8_t battery_low_threshold = 10 * CRITICAL_LOW_THRESHOLD;
+
+    uint8_t alarm_mask = 0; // No alarms initially.
+    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask));
+
+    uint8_t battery_low_threshold = 10 * CRITICAL_LOW_VOLTAGE_THRESHOLD; // Set low threshold based on config.
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID, &battery_low_threshold));
+
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_power_config_cluster(clusters, power_config_cluster_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
     
-    // Create endpoint list
+    // --- Create Endpoint ---
+    // An endpoint is a logical interface on the device.
     esp_zb_ep_list_t *endpoints = esp_zb_ep_list_create();
     esp_zb_endpoint_config_t endpoint_config = {
         .endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, // Home Automation profile.
+        .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID, // Standard sensor device ID.
         .app_device_version = 0
     };
+    // Add the cluster list to the endpoint.
     ESP_ERROR_CHECK(esp_zb_ep_list_add_ep(endpoints, clusters, endpoint_config));
 
+    // --- Register Device and Start Zigbee Stack ---
     ESP_ERROR_CHECK(esp_zb_device_register(endpoints));
-    esp_zb_core_action_handler_register(zb_action_handler);
+    esp_zb_core_action_handler_register(zb_action_handler); // Register the callback dispatcher.
     ESP_ERROR_CHECK(esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK));
 
+
     ESP_LOGI(TAG, "Starting Zigbee stack...");
-    ESP_ERROR_CHECK(esp_zb_start(false));
+    ESP_ERROR_CHECK(esp_zb_start(false)); // Start the Zigbee stack. `false` means it won't auto-start commissioning.
     ESP_LOGI(TAG, "Zigbee stack started, waiting for network events...");
 
 
+    // --- Application Task and Main Loop ---
+    // Create a queue to pass voltage data between tasks.
     voltage_queue = xQueueCreate(4, sizeof(float));
+    // Create the task that will periodically measure the voltage.
     xTaskCreate(voltage_measurement_task, "voltage_measurement", 4096, NULL, 2, NULL);
 
+    // This is the main application loop.
     while (1) {
 
         float current_voltage;
+        // Wait for a new voltage reading from the queue.
         if (xQueueReceive(voltage_queue, &current_voltage, pdMS_TO_TICKS(50))) {
             ESP_LOGI(TAG, "Battery Voltage: %.2f V", current_voltage);
 
+            // Determine the current voltage state (OK, LOW, HIGH, CRITICAL).
             uint8_t new_state;
 
-            if (current_voltage < CRITICAL_LOW_THRESHOLD) {
+            if (current_voltage < CRITICAL_LOW_VOLTAGE_THRESHOLD) {
                 new_state = 3; // Critical low
             } else if (current_voltage < LOW_VOLTAGE_THRESHOLD) {
                 new_state = 1; // Low
@@ -422,55 +432,58 @@ void app_main(void)
                 new_state = 0; // OK
             }
 
-            // Update Zigbee attribute - using Power Configuration cluster (BatteryVoltage, tenths of a volt)
-            uint8_t battery_voltage_zb = (uint8_t)(current_voltage * 10.0f); // Zigbee expects tenths of a volt
+            // Prepare values for Zigbee reporting.
+            // Voltage is reported in tenths of a volt.
+            uint8_t battery_voltage_zb = (uint8_t)(current_voltage * 10.0f); 
+
+            // Percentage is reported as 0-200 (0-100%).
             uint8_t battery_percent_zb = (current_voltage <= LOW_VOLTAGE_THRESHOLD) ? 0 :
                               (current_voltage >= HIGH_VOLTAGE_THRESHOLD) ? 200 :
                               (uint8_t)(((current_voltage - LOW_VOLTAGE_THRESHOLD) /
                               (HIGH_VOLTAGE_THRESHOLD - LOW_VOLTAGE_THRESHOLD)) * 200);
             ESP_LOGI(TAG, "Battery Percentage ZB: %d, Battery Voltage ZB: %d", battery_percent_zb, battery_voltage_zb);
+            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
+            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb, false));
 
-            if (!zigbee_join_retry) { // Only update attributes if joined to network
-
-                if (new_state != voltage_alarm_state) {
+            // Only send Zigbee reports if the device is connected to a network.
+            if (zigbee_connected) {
+                ESP_LOGI(TAG, "Reporting Battery Voltage: %d", battery_voltage_zb);
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID));
+                ESP_LOGI(TAG, "Reported Battery Voltage: %d", battery_voltage_zb);
+                //esp_zb_stack_main_loop_iteration();
+                
+                
+                ESP_LOGI(TAG, "Reporting Battery Percentage: %d", battery_percent_zb);
+                
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID));
+                ESP_LOGI(TAG, "Reported Battery Percentage: %d", battery_percent_zb);
+                //esp_zb_stack_main_loop_iteration();
+                
+                // If the alarm state has changed, log it and update the Zigbee alarm attribute.
+                /*if (new_state != voltage_alarm_state) {
                     voltage_alarm_state = new_state;
                     ESP_LOGI(TAG, "Voltage alarm state changed to: %s",
                          (new_state == 0) ? "OK" :
                          (new_state == 1) ? "LOW" :
                          (new_state == 2) ? "HIGH" : "CRITICAL");
 
-                    // Update occupancy sensor attribute to indicate alarm state
-                    /*ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
-                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
-                                            &voltage_alarm_state, false)); */
-                }
-
-                /*esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {0};
-                #define COORDINATOR_ADDR 0x0000
-                report_attr_cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_ADDR;
-                report_attr_cmd.zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
-                report_attr_cmd.zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
-                report_attr_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-                report_attr_cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
-                report_attr_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
-                report_attr_cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID; */
-
-                //ESP_ERROR_CHECK(esp_zb_lock_acquire(portMAX_DELAY));
-                //ESP_ERROR_CHECK(esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd));
-                //esp_zb_lock_release();
-
-
-                /*ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-                                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
-                                        &battery_voltage_zb, false));
-
-                ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-                                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
-                                        &battery_percent_zb, false));*/
+                    // Update the BatteryAlarmMask attribute to signal a low voltage condition.
+                    // Bit 0 corresponds to "Battery voltage too low".
+                    uint8_t alarm_mask = 0;
+                    if (new_state == 1 || new_state == 3) { // LOW or CRITICAL
+                        alarm_mask = 1;
+                    }
+                    //ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask, false));
+                    ESP_LOGI(TAG, "Reporting Battery Alarm Mask: %d", alarm_mask);
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask));
+                    ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask);
+                    //esp_zb_stack_main_loop_iteration();
+                }*/
             } else {
                 ESP_LOGW(TAG, "Not joined to Zigbee network - skipping attribute update");
             }
         }
+        // Allow the Zigbee stack to process its events. This is crucial.
         esp_zb_stack_main_loop_iteration();
     }
     
