@@ -22,34 +22,34 @@ bool zigbee_connected = false;
 void configure_reporting(void) {
     esp_zb_zcl_config_report_cmd_t report_cmd = {
         .zcl_basic_cmd.dst_addr_u.addr_short = 0x0000, // Report to coordinator
-        .zcl_basic_cmd.dst_endpoint = 1,
+        .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
         .clusterID = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
     };
 
-    uint8_t reportable_change_voltage = 1;    // 0.1V change
-    uint8_t reportable_change_percentage = 2; // 1% change (in 0.5% units)
+    static uint8_t reportable_change_voltage = 1;    // 0.1V change
+    static uint8_t reportable_change_percentage = 2; // 1% change (in 0.5% units)
 
     esp_zb_zcl_config_report_record_t records[] = {
         {
-            .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND, // https://docs.espressif.com/projects/esp-zigbee-sdk/en/latest/esp32h2/user-guide/zcl_general_report.html
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
             .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
             .min_interval = 0,
-            .max_interval = 60,
+            .max_interval = 10,
             .reportable_change = &reportable_change_voltage,
         },
         {
-            .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
             .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
             .min_interval = 0,
-            .max_interval = 60,
+            .max_interval = 10,
             .reportable_change = &reportable_change_percentage,
         },
         /*{
-            .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID,
             .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
             .min_interval = 0,
@@ -59,7 +59,9 @@ void configure_reporting(void) {
 
     report_cmd.record_number = sizeof(records) / sizeof(records[0]);
     report_cmd.record_field = records;
+    esp_zb_lock_acquire(portMAX_DELAY);
     uint8_t tx = esp_zb_zcl_config_report_cmd_req(&report_cmd);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "Configured reporting, tx: %d", tx);
 }
 
@@ -70,24 +72,23 @@ void configure_reporting(void) {
  * report command to the coordinator (address 0x0000). This is used to proactively
  * send data without waiting for a poll or request.
  *
- * @param endpoint The source endpoint of the attribute.
  * @param cluster_id The cluster ID of the attribute.
  * @param attr_id The attribute ID to report.
  */
-esp_err_t esp_zb_zcl_manual_report(uint8_t endpoint, uint16_t cluster_id, uint16_t attr_id)
+esp_err_t esp_zb_zcl_manual_report(uint16_t cluster_id, uint16_t attr_id)
 {
     // Construct and send a report command to the coordinator.
-    esp_zb_zcl_report_attr_cmd_t report_cmd = {
+    esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {
         .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
         .zcl_basic_cmd.dst_addr_u.addr_short = 0x0000, // Address 0x0000 is the coordinator.
-        .zcl_basic_cmd.dst_endpoint = 1, // Assuming coordinator endpoint is 1.
-        .zcl_basic_cmd.src_endpoint = endpoint,
+        .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
+        .zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .clusterID = cluster_id,
         .attributeID = attr_id,
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI, // from server to client
     };
 
-    return esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+    return esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd);
 }
 
 /**
@@ -236,25 +237,39 @@ esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const 
         ret = zb_read_attr_resp_handler((esp_zb_zcl_cmd_read_attr_resp_message_t *)message);
         break;
     case ESP_ZB_CORE_CMD_DEFAULT_RESP_CB_ID:
-        esp_zb_zcl_cmd_default_resp_message_t *msg = (esp_zb_zcl_cmd_default_resp_message_t *)message;
+        esp_zb_zcl_cmd_default_resp_message_t *cmd_default_resp_msg = (esp_zb_zcl_cmd_default_resp_message_t *)message;
         ESP_LOGI(TAG,
             "Default Response: cluster_id=0x%04X cmd_id=0x%02X cmd_dir=0x%02X cmd_is_common=0x%02X resp_to_cmd=0x%02X status=0x%02X",
-            msg->info.cluster,
-            msg->info.command.id,
-            msg->info.command.direction,
-            msg->info.command.is_common,
-            msg->resp_to_cmd,
-            msg->status_code
+            cmd_default_resp_msg->info.cluster,
+            cmd_default_resp_msg->info.command.id,
+            cmd_default_resp_msg->info.command.direction,
+            cmd_default_resp_msg->info.command.is_common,
+            cmd_default_resp_msg->resp_to_cmd,
+            cmd_default_resp_msg->status_code
         );
 
-        if (msg->status_code == ESP_ZB_ZCL_STATUS_SUCCESS) {
+        if (cmd_default_resp_msg->status_code == ESP_ZB_ZCL_STATUS_SUCCESS) {
             ESP_LOGI(TAG, "Command succeeded");
         } else {
-            ESP_LOGW(TAG, "Command failed with status=0x%02X", msg->status_code);
+            ESP_LOGW(TAG, "Command failed with status=0x%02X", cmd_default_resp_msg->status_code);
         }
         break;
+    case ESP_ZB_CORE_CMD_REPORT_CONFIG_RESP_CB_ID:
+        esp_zb_zcl_cmd_config_report_resp_message_t *cmd_config_report_resp_msg = (esp_zb_zcl_cmd_config_report_resp_message_t *)message;
+            ESP_LOGI(TAG,
+                "Config Report Response: cluster_id=0x%04X cmd_id=0x%02X cmd_dir=0x%02X cmd_is_common=0x%02X attribute_id=0x%02X direction=0x%02X status=0x%02X next=%p",
+                cmd_config_report_resp_msg->info.cluster,
+                cmd_config_report_resp_msg->info.command.id,
+                cmd_config_report_resp_msg->info.command.direction,
+                cmd_config_report_resp_msg->info.command.is_common,
+                cmd_config_report_resp_msg->variables->attribute_id,
+                cmd_config_report_resp_msg->variables->direction,
+                cmd_config_report_resp_msg->variables->status,
+                (void *)cmd_config_report_resp_msg->variables->next
+            );
+            break;
     default:
-        ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
+        ESP_LOGW(TAG, "Receive Unhandled Zigbee action (0x%x) callback", callback_id);
         break;
     }
     return ret;

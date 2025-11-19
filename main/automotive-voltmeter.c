@@ -316,17 +316,19 @@ void app_main(void)
             // Only send Zigbee reports if the device is connected to a network.
             if (zigbee_connected) {
 
+/*
                 ESP_LOGI(TAG, "Reporting Battery Percentage: %d", battery_percent_zb);
-                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID));
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID));
                 ESP_LOGI(TAG, "Reported Battery Percentage: %d", battery_percent_zb);
 
-/*              ESP_LOGI(TAG, "Reporting Battery Voltage: %d", battery_voltage_zb);
+                ESP_LOGI(TAG, "Reporting Battery Voltage: %d", battery_voltage_zb);
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID));
                 ESP_LOGI(TAG, "Reported Battery Voltage: %d", battery_voltage_zb);
 
                 ESP_LOGI(TAG, "Reporting Battery Alarm Mask: %d", alarm_mask_zb);
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID));
-                ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask_zb); */
+                ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask_zb)
+*/
 
             } else {
                 ESP_LOGW(TAG, "Not joined to Zigbee network - skipping manual attribute flush");

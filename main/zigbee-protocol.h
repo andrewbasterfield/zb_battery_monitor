@@ -29,11 +29,10 @@ esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const 
  * report command to the coordinator (address 0x0000). This is used to proactively
  * send data without waiting for a poll or request.
  *
- * @param endpoint The source endpoint of the attribute.
  * @param cluster_id The cluster ID of the attribute.
  * @param attr_id The attribute ID to report.
  * @param value A pointer to the attribute's value.
  */
-esp_err_t esp_zb_zcl_manual_report(uint8_t endpoint, uint16_t cluster_id, uint16_t attr_id);
+esp_err_t esp_zb_zcl_manual_report(uint16_t cluster_id, uint16_t attr_id);
 
 extern bool zigbee_connected;              // Flag to indicate if connected to a Zigbee network
