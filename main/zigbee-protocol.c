@@ -6,12 +6,29 @@
 
 bool zigbee_connected = false;
 
-#define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1 // Zigbee endpoint for this device
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID 0x0020
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID 0x0021
-#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK // Scan all channels to find a network
-#define TAG "AUTOMOTIVE_VOLTMETER_ZIGBEE"
+#define TAG "ZB_BATTERY_MONITOR_ZIGBEE"
+#define COORDINATOR_ADDR 0x0000
 
+static void bind_callback(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
+    esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *)user_ctx;
+
+    if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+        ESP_LOGI(TAG, "Successful bind from address(0x%x) on endpoint(%d)", bind_req->req_dst_addr, bind_req->dst_endp);
+    }
+    free(bind_req);
+}
+
+static void configure_binding() {
+    esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *)calloc(1, sizeof(esp_zb_zdo_bind_req_param_t));
+    bind_req->req_dst_addr = esp_zb_get_short_address();
+    bind_req->src_endp = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
+    bind_req->dst_endp = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
+    bind_req->cluster_id = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+    bind_req->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+    ESP_ERROR_CHECK(esp_zb_ieee_address_by_short(COORDINATOR_ADDR, bind_req->dst_address_u.addr_long));
+    esp_zb_get_long_address(bind_req->src_address);
+    esp_zb_zdo_device_bind_req(bind_req, bind_callback, bind_req);
+}
 
 /**
 * @brief Configures automatic attribute reporting to the coordinator.
@@ -21,7 +38,7 @@ bool zigbee_connected = false;
  */
 void configure_reporting(void) {
     esp_zb_zcl_config_report_cmd_t report_cmd = {
-        .zcl_basic_cmd.dst_addr_u.addr_short = 0x0000, // Report to coordinator
+        .zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(),
         .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
@@ -36,16 +53,16 @@ void configure_reporting(void) {
             .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND, // https://docs.espressif.com/projects/esp-zigbee-sdk/en/latest/esp32h2/user-guide/zcl_general_report.html
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
             .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-            .min_interval = 0,
-            .max_interval = 10,
+            .min_interval = 5,
+            .max_interval = 60,
             .reportable_change = &reportable_change_voltage,
         },
         {
             .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
             .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-            .min_interval = 0,
-            .max_interval = 10,
+            .min_interval = 5,
+            .max_interval = 60,
             .reportable_change = &reportable_change_percentage,
         },
         /*{
@@ -57,11 +74,21 @@ void configure_reporting(void) {
         },*/
     };
 
-    report_cmd.record_number = sizeof(records) / sizeof(records[0]);
+    report_cmd.record_number = sizeof(records) / sizeof(esp_zb_zcl_config_report_record_t);
     report_cmd.record_field = records;
     esp_zb_lock_acquire(portMAX_DELAY);
     uint8_t tx = esp_zb_zcl_config_report_cmd_req(&report_cmd);
     esp_zb_lock_release();
+
+    /*esp_zb_zcl_attr_location_info_t attr_info = {
+        .endpoint_id = HA_ESP_VOLTAGE_SENSOR_ENDPOINT, // 1
+        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .manuf_code = 0x0000,
+        .attr_id = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+    };
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_start_attr_reporting(attr_info));*/
+
     ESP_LOGI(TAG, "Configured reporting, tx: %d", tx);
 }
 
@@ -80,7 +107,7 @@ esp_err_t esp_zb_zcl_manual_report(uint16_t cluster_id, uint16_t attr_id)
     // Construct and send a report command to the coordinator.
     esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {
         .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-        .zcl_basic_cmd.dst_addr_u.addr_short = 0x0000, // Address 0x0000 is the coordinator.
+        .zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_ADDR,
         .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
         .clusterID = cluster_id,
@@ -88,7 +115,11 @@ esp_err_t esp_zb_zcl_manual_report(uint16_t cluster_id, uint16_t attr_id)
         .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI, // from server to client
     };
 
-    return esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd);
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_err_t ret = esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd);
+    esp_zb_lock_release();
+
+    return ret;
 }
 
 /**
@@ -109,7 +140,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         // This signal indicates the Zigbee stack is initialized and ready.
         ESP_LOGI(TAG, "Zigbee stack initialized");
-        ESP_LOGI(TAG, "Primary channel mask: 0x%08x", (unsigned int)ESP_ZB_PRIMARY_CHANNEL_MASK);
         // Start the top-level commissioning process (e.g., network steering, forming).
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
@@ -142,6 +172,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "Successfully joined network");
             zigbee_connected = true;
             configure_reporting();
+            configure_binding();
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
             ESP_LOGI(TAG, "Joined network (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d)",
@@ -256,18 +287,17 @@ esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const 
         break;
     case ESP_ZB_CORE_CMD_REPORT_CONFIG_RESP_CB_ID:
         esp_zb_zcl_cmd_config_report_resp_message_t *cmd_config_report_resp_msg = (esp_zb_zcl_cmd_config_report_resp_message_t *)message;
-            ESP_LOGI(TAG,
-                "Config Report Response: cluster_id=0x%04X cmd_id=0x%02X cmd_dir=0x%02X cmd_is_common=0x%02X attribute_id=0x%02X direction=0x%02X status=0x%02X next=%p",
-                cmd_config_report_resp_msg->info.cluster,
-                cmd_config_report_resp_msg->info.command.id,
-                cmd_config_report_resp_msg->info.command.direction,
-                cmd_config_report_resp_msg->info.command.is_common,
-                cmd_config_report_resp_msg->variables->attribute_id,
-                cmd_config_report_resp_msg->variables->direction,
-                cmd_config_report_resp_msg->variables->status,
-                (void *)cmd_config_report_resp_msg->variables->next
-            );
-            break;
+        esp_zb_zcl_config_report_resp_variable_t *record = cmd_config_report_resp_msg->variables;
+        ESP_LOGI(TAG, "Config Report Response: cluster_id=0x%04X, cmd_id=0x%02X, cmd_dir=0x%02X",
+                cmd_config_report_resp_msg->info.cluster, cmd_config_report_resp_msg->info.command.id, cmd_config_report_resp_msg->info.command.direction);
+        while (record) {
+            ESP_LOGI(TAG, "  attribute_id=0x%04X, direction=0x%02X, status=0x%02X",
+                        record->attribute_id,
+                        record->direction,
+                        record->status);
+            record = record->next;
+        }
+        break;
     default:
         ESP_LOGW(TAG, "Receive Unhandled Zigbee action (0x%x) callback", callback_id);
         break;

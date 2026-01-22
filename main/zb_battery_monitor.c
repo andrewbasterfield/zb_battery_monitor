@@ -1,13 +1,8 @@
 // Includes for Zigbee, FreeRTOS, ADC, NVS, and logging
 #include "adc-sensor.h"
-#include "esp_zigbee_core.h"
-#include "zcl/esp_zigbee_zcl_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
 #include "nvs_flash.h"
 
 #include "zigbee-protocol.h"
@@ -15,44 +10,7 @@
 // --- Constants and Configuration ---
 
 // Tag for logging
-#define TAG "AUTOMOTIVE_VOLTMETER"
-
-#define MANUFACTURER_NAME "\x09""ESPRESSIF"
-#define MODEL_IDENTIFIER "\x07" CONFIG_IDF_TARGET
-
-// --- Simulation Configuration ---
-// Set to 1 to use simulated voltage for testing, 0 to use the real ADC.
-#define USE_SIMULATED_VOLTAGE 1
-
-// --- Hardware Configuration ---
-#define VOLTAGE_DIVIDER_CHANNEL ADC_CHANNEL_0  // ADC channel connected to the voltage divider (GPIO0)
-#define SAMPLE_COUNT 64                        // Number of ADC samples to average for each measurement
-#define MEASUREMENT_INTERVAL_MS 5000           // Interval between voltage measurements in milliseconds
-
-// --- Voltage Divider Configuration ---
-// Adjust these values based on the resistors used in the voltage divider circuit.
-// The goal is to scale the automotive voltage (e.g., 0-16V) down to the ESP32's ADC input range (e.g., 0-3.3V).
-// Example: R1=47kΩ, R2=10kΩ -> Ratio = (R1+R2)/R2 = 57k/10k = 5.7
-#define VOLTAGE_DIVIDER_RATIO 5.7f // The division ratio of the voltage divider circuit
-#define ADC_VREF 3300              // ADC reference voltage in millivolts
-
-// --- Zigbee Configuration ---
-#define INSTALLCODE_POLICY_ENABLE false // Set to true to enable install code policy for joining, false to disable
-#define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN // Timeout for end device to be considered aged out by parent
-#define ED_KEEP_ALIVE 3000              // Keep-alive interval for end device in milliseconds
-#define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1 // Zigbee endpoint for this device
-#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK // Scan all channels to find a network
-
-// ZCL Attribute IDs for the Power Configuration Cluster
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID 0x0020
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID 0x0021
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID 0x0035
-#define ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID 0x0036
-
-// These thresholds define the different voltage states (in volts).
-#define LOW_VOLTAGE_THRESHOLD 12.1f    // Below this, voltage is considered "low"
-#define HIGH_VOLTAGE_THRESHOLD 14.8f   // Above this, voltage is considered "high" (e.g., alternator overcharging)
-#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.8f // Below this, voltage is critically low
+#define TAG "ZB_BATTERY_MONITOR"
 
 // --- Global Variables ---
 static uint8_t voltage_alarm_state = 0;            // Current alarm state: 0=OK, 1=LOW, 2=HIGH, 3=CRITICAL
@@ -119,12 +77,7 @@ void app_main(void)
     // --- Hardware and Logging Initialization ---
     adc_sensor_init(); // Initialize the ADC.
 
-    ESP_LOGI(TAG, "ESP32-H2 Automotive Voltmeter starting...");
-    ESP_LOGI(TAG, "Voltage divider ratio: %.1f", VOLTAGE_DIVIDER_RATIO);
-    ESP_LOGI(TAG, "Low voltage threshold: %.1fV", LOW_VOLTAGE_THRESHOLD);
-    ESP_LOGI(TAG, "High voltage threshold: %.1fV", HIGH_VOLTAGE_THRESHOLD);
-    ESP_LOGI(TAG, "Critical low threshold: %.1fV", CRITICAL_LOW_VOLTAGE_THRESHOLD);
-    ESP_LOGI(TAG, "Device will attempt to join existing Zigbee network...");
+    ESP_LOGI(TAG, "ESP32-H2 Zigbee Battery Monitor starting...");
 
     // --- Zigbee Stack Initialization ---
     // Set a custom IEEE address for the device (useful for debugging and static identification).
@@ -217,20 +170,20 @@ void app_main(void)
 
     // --- Power Configuration Cluster (Server) ---
     // This cluster is used to report battery information.
-    esp_zb_attribute_list_t *power_config_cluster_attributes = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+    esp_zb_attribute_list_t *power_config_cluster_attributes = esp_zb_power_config_cluster_create(NULL);
 
     // Add attributes for battery voltage, percentage, alarm mask, and threshold.
     uint8_t battery_voltage_zb = 120; // Initial value (12.0V)
-    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb));
+    //ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb));
 
     uint8_t battery_percent_zb = 100; // Initial value
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb));
 
     uint8_t alarm_mask_zb = 0; // No alarms initially.
-    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb));
+    //ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb));
 
-    uint8_t battery_low_threshold = 10 * CRITICAL_LOW_VOLTAGE_THRESHOLD; // Set low threshold based on config.
-    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID, &battery_low_threshold));
+    //uint8_t battery_low_threshold = 10 * CRITICAL_LOW_VOLTAGE_THRESHOLD; // Set low threshold based on config.
+    //ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID, &battery_low_threshold));
 
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_power_config_cluster(clusters, power_config_cluster_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
@@ -295,41 +248,41 @@ void app_main(void)
                               (uint8_t)(((battery_voltage - LOW_VOLTAGE_THRESHOLD) /
                               (HIGH_VOLTAGE_THRESHOLD - LOW_VOLTAGE_THRESHOLD)) * 200);
             ESP_LOGI(TAG, "Battery Percentage ZB: %d, Battery Voltage ZB: %d", battery_percent_zb, battery_voltage_zb);
-            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
+            //ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
             ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb, false));
 
-            // If the alarm state has changed, log it and update the Zigbee alarm attribute.*if (new_state != voltage_alarm_state) {
-            voltage_alarm_state = new_state;
-            ESP_LOGI(TAG, "Voltage alarm state changed to: %s",
-                     (new_state == 0) ? "OK" :
-                     (new_state == 1) ? "LOW" :
-                     (new_state == 2) ? "HIGH" : "CRITICAL");
+            // If the alarm state has changed, log it and update the Zigbee alarm attribute.
+            if (new_state != voltage_alarm_state) {
+                voltage_alarm_state = new_state;
+                ESP_LOGI(TAG, "Voltage alarm state changed to: %s",
+                         (new_state == 0) ? "OK" :
+                         (new_state == 1) ? "LOW" :
+                         (new_state == 2) ? "HIGH" : "CRITICAL");
 
-            // Update the BatteryAlarmMask attribute to signal a low voltage condition.
-            // Bit 0 corresponds to "Battery voltage too low".
-            alarm_mask_zb = 0;
-            if (new_state == 1 || new_state == 3) { // LOW or CRITICAL
-                alarm_mask_zb = 1;
+                // Update the BatteryAlarmMask attribute to signal a low voltage condition.
+                // Bit 0 corresponds to "Battery voltage too low".
+                alarm_mask_zb = 0;
+                if (new_state == 1 || new_state == 3) { // LOW or CRITICAL
+                    alarm_mask_zb = 1;
+                }
+                //ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb, false));
             }
-            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb, false));
 
             // Only send Zigbee reports if the device is connected to a network.
             if (zigbee_connected) {
-
-/*
+                /* Manual reporting is causing a crash. Commenting out to test automatic reporting.
                 ESP_LOGI(TAG, "Reporting Battery Percentage: %d", battery_percent_zb);
                 ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID));
                 ESP_LOGI(TAG, "Reported Battery Percentage: %d", battery_percent_zb);
 
                 ESP_LOGI(TAG, "Reporting Battery Voltage: %d", battery_voltage_zb);
-                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID));
+                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID));
                 ESP_LOGI(TAG, "Reported Battery Voltage: %d", battery_voltage_zb);
 
-                ESP_LOGI(TAG, "Reporting Battery Alarm Mask: %d", alarm_mask_zb);
-                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID));
-                ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask_zb)
-*/
-
+                //ESP_LOGI(TAG, "Reporting Battery Alarm Mask: %d", alarm_mask_zb);
+                //ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID));
+                //ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask_zb);
+                */
             } else {
                 ESP_LOGW(TAG, "Not joined to Zigbee network - skipping manual attribute flush");
             }

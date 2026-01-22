@@ -17,7 +17,7 @@
 
 // --- Voltage Divider Configuration ---
 // Adjust these values based on the resistors used in the voltage divider circuit.
-// The goal is to scale the automotive voltage (e.g., 0-16V) down to the ESP32's ADC input range (e.g., 0-3.3V).
+// The goal is to scale the battery voltage (e.g., 0-16V) down to the ESP32's ADC input range (e.g., 0-3.3V).
 // Example: R1=47kΩ, R2=10kΩ -> Ratio = (R1+R2)/R2 = 57k/10k = 5.7
 #define VOLTAGE_DIVIDER_RATIO 5.7f // The division ratio of the voltage divider circuit
 #define ADC_VREF 3300              // ADC reference voltage in millivolts

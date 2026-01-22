@@ -1,6 +1,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
 
 /**
  * @brief Initializes the ADC for voltage measurement.

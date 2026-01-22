@@ -1,6 +1,27 @@
 #pragma once
 
 #include "esp_zigbee_core.h"
+#include "zcl/esp_zigbee_zcl_power_config.h"
+#include "esp_zigbee_core.h"
+#include "zcl/esp_zigbee_zcl_common.h"
+
+#define MANUFACTURER_NAME "\x09""ESPRESSIF"
+#define MODEL_IDENTIFIER "\x07" CONFIG_IDF_TARGET
+
+// --- Hardware Configuration ---
+#define MEASUREMENT_INTERVAL_MS 5000           // Interval between voltage measurements in milliseconds
+
+// --- Zigbee Configuration ---
+#define INSTALLCODE_POLICY_ENABLE false // Set to true to enable install code policy for joining, false to disable
+#define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN // Timeout for end device to be considered aged out by parent
+#define ED_KEEP_ALIVE 3000              // Keep-alive interval for end device in milliseconds
+#define HA_ESP_VOLTAGE_SENSOR_ENDPOINT 1 // Zigbee endpoint for this device
+#define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK // Scan all channels to find a network
+
+// These thresholds define the different voltage states (in volts).
+#define LOW_VOLTAGE_THRESHOLD 12.1f    // Below this, voltage is considered "low"
+#define HIGH_VOLTAGE_THRESHOLD 14.8f   // Above this, voltage is considered "high" (e.g., alternator overcharging)
+#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.8f // Below this, voltage is critically low
 
 /**
  * @brief Configures automatic attribute reporting to the coordinator.
