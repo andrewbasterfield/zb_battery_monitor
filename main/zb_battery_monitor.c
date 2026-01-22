@@ -173,10 +173,14 @@ void app_main(void)
     esp_zb_attribute_list_t *power_config_cluster_attributes = esp_zb_power_config_cluster_create(NULL);
 
     // Add attributes for battery voltage, percentage, alarm mask, and threshold.
+    // NOTE: Battery voltage is added but cannot be configured for automatic reporting due to SDK limitation.
+    // The SDK defines BATTERY_VOLTAGE as READ_ONLY without the REPORTING flag, unlike BATTERY_PERCENTAGE_REMAINING
+    // which includes READ_ONLY | REPORTING. See README.md for details.
     uint8_t battery_voltage_zb = 120; // Initial value (12.0V)
-    //ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb));
+    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb));
 
     uint8_t battery_percent_zb = 100; // Initial value
+    // Battery percentage supports automatic reporting and will be configured by the coordinator.
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb));
 
     uint8_t alarm_mask_zb = 0; // No alarms initially.
@@ -248,7 +252,11 @@ void app_main(void)
                               (uint8_t)(((battery_voltage - LOW_VOLTAGE_THRESHOLD) /
                               (HIGH_VOLTAGE_THRESHOLD - LOW_VOLTAGE_THRESHOLD)) * 200);
             ESP_LOGI(TAG, "Battery Percentage ZB: %d, Battery Voltage ZB: %d", battery_percent_zb, battery_voltage_zb);
-            //ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
+            
+            // Update both attributes in the Zigbee cluster.
+            // Voltage: Updated but cannot auto-report (SDK limitation - see README.md)
+            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
+            // Percentage: Updated and will auto-report when configured by coordinator
             ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb, false));
 
             // If the alarm state has changed, log it and update the Zigbee alarm attribute.
@@ -268,24 +276,10 @@ void app_main(void)
                 //ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb, false));
             }
 
-            // Only send Zigbee reports if the device is connected to a network.
-            if (zigbee_connected) {
-                /* Manual reporting is causing a crash. Commenting out to test automatic reporting.
-                ESP_LOGI(TAG, "Reporting Battery Percentage: %d", battery_percent_zb);
-                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID));
-                ESP_LOGI(TAG, "Reported Battery Percentage: %d", battery_percent_zb);
-
-                ESP_LOGI(TAG, "Reporting Battery Voltage: %d", battery_voltage_zb);
-                ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID));
-                ESP_LOGI(TAG, "Reported Battery Voltage: %d", battery_voltage_zb);
-
-                //ESP_LOGI(TAG, "Reporting Battery Alarm Mask: %d", alarm_mask_zb);
-                //ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_manual_report(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID));
-                //ESP_LOGI(TAG, "Reported Battery Alarm Mask: %d", alarm_mask_zb);
-                */
-            } else {
-                ESP_LOGW(TAG, "Not joined to Zigbee network - skipping manual attribute flush");
-            }
+            // Note: Voltage attribute is not reportable in the ESP Zigbee SDK (it's defined as READ_ONLY
+            // without the REPORTING flag, unlike percentage which has READ_ONLY | REPORTING).
+            // The voltage can still be read by the coordinator, but automatic reporting is not supported.
+            // Percentage will report automatically via coordinator configuration.
         }
         // Allow the Zigbee stack to process its events. This is crucial.
         esp_zb_stack_main_loop_iteration();

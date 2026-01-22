@@ -1,8 +1,14 @@
+// Forward declaration to avoid circular dependency issue in ESP-IDF library
+// This must come before any includes that might include esp_zigbee_zcl_core.h
+typedef struct esp_zb_zcl_command_send_status_s esp_zb_zcl_command_send_status_message_t;
+typedef void (*esp_zb_zcl_command_send_status_callback_t)(esp_zb_zcl_command_send_status_message_t message);
+
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "esp_check.h"
 
 #include "zigbee-protocol.h"
+#include "zcl/esp_zigbee_zcl_command.h"  // Include after other headers
 
 bool zigbee_connected = false;
 
@@ -31,10 +37,16 @@ static void configure_binding() {
 }
 
 /**
-* @brief Configures automatic attribute reporting to the coordinator.
+ * @brief Configures automatic attribute reporting to the coordinator.
  *
- * This function sets up the device to automatically report voltage and battery percentage
- * based on time intervals and value changes.
+ * NOTE: This function is currently not called. The coordinator (zigbee2mqtt) handles
+ * reporting configuration automatically. Device-side reporting configuration was disabled
+ * because:
+ * 1. The coordinator should configure reporting (standard Zigbee practice)
+ * 2. Battery voltage cannot be configured for reporting due to SDK limitation (see README.md)
+ * 3. Battery percentage reporting is successfully configured by the coordinator
+ *
+ * This function is kept for reference but is commented out in the network join handler.
  */
 void configure_reporting(void) {
     esp_zb_zcl_config_report_cmd_t report_cmd = {
@@ -79,15 +91,6 @@ void configure_reporting(void) {
     esp_zb_lock_acquire(portMAX_DELAY);
     uint8_t tx = esp_zb_zcl_config_report_cmd_req(&report_cmd);
     esp_zb_lock_release();
-
-    /*esp_zb_zcl_attr_location_info_t attr_info = {
-        .endpoint_id = HA_ESP_VOLTAGE_SENSOR_ENDPOINT, // 1
-        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .manuf_code = 0x0000,
-        .attr_id = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
-    };
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_zb_zcl_start_attr_reporting(attr_info));*/
 
     ESP_LOGI(TAG, "Configured reporting, tx: %d", tx);
 }
@@ -171,7 +174,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             // Successfully joined a network.
             ESP_LOGI(TAG, "Successfully joined network");
             zigbee_connected = true;
-            configure_reporting();
+            // Let the coordinator configure reporting instead of doing it ourselves.
+            // Device-side reporting configuration is disabled because:
+            // 1. Standard practice: coordinator should configure reporting
+            // 2. Battery voltage cannot be configured for reporting (SDK limitation)
+            // 3. Battery percentage is successfully configured by the coordinator
+            // configure_reporting();  // See function documentation for details
             configure_binding();
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);

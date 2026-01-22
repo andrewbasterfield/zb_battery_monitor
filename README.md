@@ -6,8 +6,8 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
 
 -   **Voltage Monitoring:** Measures 12V lead-acid battery voltage via a voltage divider connected to the ADC.
 -   **Zigbee Reporting:**
-    -   **Battery Voltage:** Reports voltage in 0.1V increments.
-    -   **Battery Percentage:** Calculates an estimated percentage based on configurable thresholds (12.1V - 14.8V).
+    -   **Battery Voltage:** Reports voltage in 0.1V increments (readable, but see [Known Issues](#known-issues) regarding automatic reporting).
+    -   **Battery Percentage:** Calculates an estimated percentage based on configurable thresholds (12.1V - 14.8V). Automatically reports to coordinator.
     -   **Alarms:** Detects and reports Low, High, and Critical voltage states.
 -   **Device Roles:** Configurable as a **Router** (always on, relays messages) or **End Device** (sleeps, low power).
 -   **Simulation Mode:** Includes a software simulation mode for testing without hardware.
@@ -24,10 +24,11 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
 
 ## Project Structure
 
--   `main/zb_battery_monitor.c`: Main application logic. Handles Zigbee stack initialization, the main event loop, and reporting logic.
+-   `main/zb_battery_monitor.c`: Main application logic. Handles Zigbee stack initialization, the main event loop, and attribute updates.
 -   `main/adc-sensor.c` / `.h`: Handles ADC initialization, calibration, and reading. Includes a voltage simulation mode.
--   `main/zigbee-protocol.c` / `.h`: Manages Zigbee stack configuration, reporting (automatic and manual), and callbacks.
+-   `main/zigbee-protocol.c` / `.h`: Manages Zigbee stack configuration, binding, and callbacks. Note: Reporting configuration is handled by the coordinator.
 -   `main/idf_component.yml`: Project dependencies (`esp-zigbee-lib`, `esp-zboss-lib`).
+-   `esp_voltmeter.mjs`: Custom zigbee2mqtt converter file. Copy this to your zigbee2mqtt `external_converters` directory.
 
 ## Installation & Build
 
@@ -76,17 +77,48 @@ Key settings can be modified in the source files:
 ## How It Works
 
 1.  **Initialization:** The app initializes NVS, the ADC sensor, and the Zigbee stack.
-2.  **Zigbee Setup:** It registers a "Power Configuration" cluster to report battery status.
+2.  **Zigbee Setup:** It registers a "Power Configuration" cluster with battery voltage and percentage attributes.
 3.  **Measurement Loop:** A FreeRTOS task (`voltage_measurement_task`) wakes up periodically to read the voltage (or simulate it).
 4.  **Data Processing:** The raw voltage is converted to a percentage and checked against alarm thresholds.
-5.  **Reporting:**
-    -   If the value changes significantly or an alarm state changes, the attributes are updated.
-    -   The Zigbee stack handles reporting these values to the coordinator.
+5.  **Attribute Updates:** Both voltage and percentage attributes are updated in the Zigbee cluster whenever new measurements are taken.
+6.  **Reporting:**
+    -   **Battery Percentage:** Automatically reports to the coordinator when configured (handled by coordinator during device setup).
+    -   **Battery Voltage:** Updated locally but cannot auto-report due to SDK limitation. Can be read/polled by coordinator on demand.
 
-## Current Status & Known Issues
+## Zigbee2MQTT Configuration
 
-*Reference: CONTEXT.md*
+This project includes a custom converter file (`esp_voltmeter.mjs`) for use with zigbee2mqtt. 
 
--   **Reporting Issue:** The device currently fails to configure automatic reporting for `BatteryVoltage` and `BatteryPercentageRemaining`. The Zigbee stack returns `UNSUPPORTED_ATTRIBUTE` or `FAILURE` when the device attempts to configure reporting on itself.
--   **Workaround:** Manual reporting was attempted but caused crashes. Currently, manual reporting is commented out in `main/zb_battery_monitor.c`.
--   **Next Steps:** The plan is to simplify the cluster configuration by removing non-essential attributes to isolate the reporting issue.
+**Setup:**
+1. Copy `esp_voltmeter.mjs` from the project root to your zigbee2mqtt `external_converters` directory.
+   - Typical location: `/opt/zigbee2mqtt/data/external_converters/` or `/var/lib/iot-stack/zigbee2mqtt-data/external_converters/`
+   - Check your zigbee2mqtt configuration for the exact path.
+2. Restart zigbee2mqtt to load the new converter.
+
+**Converter Configuration:**
+- `voltageReporting: false` - Disabled because the ESP Zigbee SDK doesn't support automatic reporting for the voltage attribute (see [Known Issues](#known-issues)).
+- `percentageReporting: true` - Enabled and working correctly.
+- The voltage attribute is still exposed and readable, but requires manual polling rather than automatic updates.
+
+## Known Issues
+
+### Battery Voltage Reporting Limitation
+
+**Issue:** The `BatteryVoltage` attribute cannot be configured for automatic reporting. The coordinator will receive `UNREPORTABLE_ATTRIBUTE` errors when attempting to configure reporting.
+
+**Root Cause:** This is a limitation of the ESP Zigbee SDK. The SDK defines `BATTERY_VOLTAGE` as `READ_ONLY` without the `REPORTING` access flag, while `BATTERY_PERCENTAGE_REMAINING` is correctly defined as `READ_ONLY | REPORTING`. The SDK's `esp_zb_power_config_cluster_add_attr()` function doesn't allow overriding the attribute access flags.
+
+**Impact:**
+- ✅ Battery voltage is readable by the coordinator (can be polled/read on demand)
+- ✅ Battery percentage reports automatically
+- ❌ Battery voltage does not update automatically (requires manual read/poll)
+
+**Workarounds:**
+- The voltage attribute is updated in the device's local storage and can be read by the coordinator when requested
+- zigbee2mqtt can be configured to poll the voltage attribute periodically
+- Consider using battery percentage for automatic monitoring, as it reports correctly
+
+**Technical Details:**
+- See `managed_components/espressif__esp-zboss-lib/include/zcl/zb_zcl_power_config.h` lines 474-480 (voltage) vs 529-536 (percentage)
+- Voltage: `ZB_ZCL_ATTR_ACCESS_READ_ONLY`
+- Percentage: `ZB_ZCL_ATTR_ACCESS_READ_ONLY | ZB_ZCL_ATTR_ACCESS_REPORTING`
