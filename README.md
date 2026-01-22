@@ -1,4 +1,4 @@
-# Zigbee Battery Monitor
+# Zigbee Battery Monitor (WIP)
 
 A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V lead-acid battery voltage and reports it to a Zigbee Coordinator (such as Home Assistant via ZHA or Zigbee2MQTT).
 
