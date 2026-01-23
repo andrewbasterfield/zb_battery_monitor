@@ -13,6 +13,14 @@ export default {
             percentageReporting: true,        // percentage reporting works fine
             percentageReportingConfig: {min: 5, max: 60, change: 1},
         }),
+        m.numeric({
+            name: 'voltage_analog',
+            cluster: 'genAnalogInput',
+            attribute: 'presentValue',
+            description: 'Voltage (Analog Input)',
+            unit: 'V',
+            reporting: {min: 5, max: 60, change: 0.1},
+        }),
     ],
     meta: {},
 };

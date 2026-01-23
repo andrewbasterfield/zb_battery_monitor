@@ -34,21 +34,24 @@ static void configure_binding() {
     ESP_ERROR_CHECK(esp_zb_ieee_address_by_short(COORDINATOR_ADDR, bind_req->dst_address_u.addr_long));
     esp_zb_get_long_address(bind_req->src_address);
     esp_zb_zdo_device_bind_req(bind_req, bind_callback, bind_req);
+
+    // Bind Analog Input Cluster
+    esp_zb_zdo_bind_req_param_t *bind_req_analog = (esp_zb_zdo_bind_req_param_t *)calloc(1, sizeof(esp_zb_zdo_bind_req_param_t));
+    bind_req_analog->req_dst_addr = esp_zb_get_short_address();
+    bind_req_analog->src_endp = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
+    bind_req_analog->dst_endp = HA_ESP_VOLTAGE_SENSOR_ENDPOINT;
+    bind_req_analog->cluster_id = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT;
+    bind_req_analog->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+    ESP_ERROR_CHECK(esp_zb_ieee_address_by_short(COORDINATOR_ADDR, bind_req_analog->dst_address_u.addr_long));
+    esp_zb_get_long_address(bind_req_analog->src_address);
+    esp_zb_zdo_device_bind_req(bind_req_analog, bind_callback, bind_req_analog);
 }
 
 /**
  * @brief Configures automatic attribute reporting to the coordinator.
- *
- * NOTE: This function is currently not called. The coordinator (zigbee2mqtt) handles
- * reporting configuration automatically. Device-side reporting configuration was disabled
- * because:
- * 1. The coordinator should configure reporting (standard Zigbee practice)
- * 2. Battery voltage cannot be configured for reporting due to SDK limitation (see README.md)
- * 3. Battery percentage reporting is successfully configured by the coordinator
- *
- * This function is kept for reference but is commented out in the network join handler.
  */
 void configure_reporting(void) {
+    // --- Power Configuration Reporting ---
     esp_zb_zcl_config_report_cmd_t report_cmd = {
         .zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(),
         .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
@@ -57,18 +60,9 @@ void configure_reporting(void) {
         .clusterID = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
     };
 
-    static uint8_t reportable_change_voltage = 1;    // 0.1V change
     static uint8_t reportable_change_percentage = 2; // 1% change (in 0.5% units)
 
     esp_zb_zcl_config_report_record_t records[] = {
-        {
-            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND, // https://docs.espressif.com/projects/esp-zigbee-sdk/en/latest/esp32h2/user-guide/zcl_general_report.html
-            .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
-            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-            .min_interval = 5,
-            .max_interval = 60,
-            .reportable_change = &reportable_change_voltage,
-        },
         {
             .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
@@ -77,22 +71,43 @@ void configure_reporting(void) {
             .max_interval = 60,
             .reportable_change = &reportable_change_percentage,
         },
-        /*{
-            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
-            .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID,
-            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-            .min_interval = 0,
-            .max_interval = 60,
-        },*/
     };
 
     report_cmd.record_number = sizeof(records) / sizeof(esp_zb_zcl_config_report_record_t);
     report_cmd.record_field = records;
     esp_zb_lock_acquire(portMAX_DELAY);
-    uint8_t tx = esp_zb_zcl_config_report_cmd_req(&report_cmd);
+    esp_zb_zcl_config_report_cmd_req(&report_cmd);
     esp_zb_lock_release();
 
-    ESP_LOGI(TAG, "Configured reporting, tx: %d", tx);
+    // --- Analog Input Reporting ---
+    esp_zb_zcl_config_report_cmd_t report_cmd_analog = {
+        .zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(),
+        .zcl_basic_cmd.dst_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
+        .zcl_basic_cmd.src_endpoint = HA_ESP_VOLTAGE_SENSOR_ENDPOINT,
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+    };
+
+    static float reportable_change_analog = 0.1f; // 0.1V change
+
+    esp_zb_zcl_config_report_record_t records_analog[] = {
+        {
+            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+            .attributeID = ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID,
+            .attrType = ESP_ZB_ZCL_ATTR_TYPE_SINGLE,
+            .min_interval = 5,
+            .max_interval = 60,
+            .reportable_change = &reportable_change_analog,
+        },
+    };
+
+    report_cmd_analog.record_number = sizeof(records_analog) / sizeof(esp_zb_zcl_config_report_record_t);
+    report_cmd_analog.record_field = records_analog;
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_config_report_cmd_req(&report_cmd_analog);
+    esp_zb_lock_release();
+
+    ESP_LOGI(TAG, "Configured reporting for Power Config and Analog Input");
 }
 
 /**
@@ -179,7 +194,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             // 1. Standard practice: coordinator should configure reporting
             // 2. Battery voltage cannot be configured for reporting (SDK limitation)
             // 3. Battery percentage is successfully configured by the coordinator
-            // configure_reporting();  // See function documentation for details
+            configure_reporting();  // See function documentation for details
             configure_binding();
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
