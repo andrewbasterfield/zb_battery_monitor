@@ -15,6 +15,12 @@ bool zigbee_connected = false;
 #define TAG "ZB_BATTERY_MONITOR_ZIGBEE"
 #define COORDINATOR_ADDR 0x0000
 
+static void retry_steering_cb(uint8_t param)
+{
+    ESP_LOGI(TAG, "Retrying network steering...");
+    esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+}
+
 static void bind_callback(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
     esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *)user_ctx;
 
@@ -206,12 +212,14 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             // Failed to join, will be retried by the main loop logic.
             ESP_LOGI(TAG, "Network steering failed (status: %s), retrying in 1 second...", esp_err_to_name(err_status));
             // Simple retry without deprecated scheduler - will be handled by task
+            esp_zb_scheduler_alarm(retry_steering_cb, 0, 1000);
         }
         break;
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
         // This signal indicates the device has left the network.
-        ESP_LOGI(TAG, "Leave network");
+        ESP_LOGI(TAG, "Leave network, retrying in 3 seconds...");
         zigbee_connected = false; // Enable retrying to join a network again.
+        esp_zb_scheduler_alarm(retry_steering_cb, 0, 3000);
         break;
     default:
         // Catch-all for other unhandled signals.
