@@ -191,7 +191,21 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_power_config_cluster(clusters, power_config_cluster_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
+    // --- Analog Input Cluster (Server) ---
+    // This cluster provides an interface for reading the value of an analog measurement.
+    esp_zb_analog_input_cluster_cfg_t analog_input_cfg = {
+        .out_of_service = false,
+        .present_value = 0.0f,
+        .status_flags = 0
+    };
+    esp_zb_attribute_list_t *analog_input_attributes = esp_zb_analog_input_cluster_create(&analog_input_cfg);
     
+    // Check if attributes are created successfully by the helper before adding manual ones.
+    // The helper `esp_zb_analog_input_cluster_create` adds mandatory attributes:
+    // PresentValue, StatusFlags, OutOfService.
+    
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_analog_input_cluster(clusters, analog_input_attributes, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
     // --- Create Endpoint ---
     // An endpoint is a logical interface on the device.
     esp_zb_ep_list_t *endpoints = esp_zb_ep_list_create();
@@ -258,6 +272,9 @@ void app_main(void)
             ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_zb, false));
             // Percentage: Updated and will auto-report when configured by coordinator
             ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb, false));
+
+            // Update Analog Input PresentValue with the float voltage
+            ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID, &battery_voltage, false));
 
             // If the alarm state has changed, log it and update the Zigbee alarm attribute.
             if (new_state != voltage_alarm_state) {

@@ -2,6 +2,7 @@
 
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_power_config.h"
+#include "zcl/esp_zigbee_zcl_analog_input.h"
 #include "zcl/esp_zigbee_zcl_common.h"
 
 #define MANUFACTURER_NAME "\x09""ESPRESSIF"
