@@ -6,8 +6,9 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
 
 -   **Voltage Monitoring:** Measures 12V lead-acid battery voltage via a voltage divider connected to the ADC.
 -   **Zigbee Reporting:**
-    -   **Battery Voltage:** Reports voltage in 0.1V increments (readable, but see [Known Issues](#known-issues) regarding automatic reporting).
-    -   **Battery Percentage:** Calculates an estimated percentage based on configurable thresholds (12.1V - 14.8V). Automatically reports to coordinator.
+    -   **Battery Voltage (Precise):** Automatically reports precise voltage (float) via the **Analog Input** cluster (0x000C).
+    -   **Battery Percentage:** Automatically reports estimated percentage based on configurable thresholds (12.1V - 14.8V).
+    -   **Battery Voltage (Legacy):** Reports via Power Configuration cluster (requires polling due to SDK limitations).
     -   **Alarms:** Detects and reports Low, High, and Critical voltage states.
 -   **Device Roles:** Configurable as a **Router** (always on, relays messages) or **End Device** (sleeps, low power).
 -   **Simulation Mode:** Includes a software simulation mode for testing without hardware.
@@ -96,9 +97,10 @@ This project includes a custom converter file (`esp_voltmeter.mjs`) for use with
 2. Restart zigbee2mqtt to load the new converter.
 
 **Converter Configuration:**
-- `voltageReporting: false` - Disabled because the ESP Zigbee SDK doesn't support automatic reporting for the voltage attribute (see [Known Issues](#known-issues)).
+- `voltage_analog` - **Primary**: Displays the precise voltage from the Analog Input cluster. Updates automatically.
+- `voltageReporting: false` - Disabled because the ESP Zigbee SDK doesn't support automatic reporting for the legacy voltage attribute.
 - `percentageReporting: true` - Enabled and working correctly.
-- The voltage attribute is still exposed and readable, but requires manual polling rather than automatic updates.
+- The legacy `voltage` attribute is still exposed and readable, but requires manual polling.
 
 ## Known Issues
 
@@ -114,9 +116,9 @@ This project includes a custom converter file (`esp_voltmeter.mjs`) for use with
 - ❌ Battery voltage does not update automatically (requires manual read/poll)
 
 **Workarounds:**
-- The voltage attribute is updated in the device's local storage and can be read by the coordinator when requested
-- zigbee2mqtt can be configured to poll the voltage attribute periodically
-- Consider using battery percentage for automatic monitoring, as it reports correctly
+- **[Implemented]** Use the **Analog Input** cluster (`voltage_analog`) which supports automatic reporting.
+- The legacy voltage attribute is updated in the device's local storage and can be read by the coordinator when requested.
+- zigbee2mqtt can be configured to poll the legacy voltage attribute periodically if needed.
 
 **Technical Details:**
 - See `managed_components/espressif__esp-zboss-lib/include/zcl/zb_zcl_power_config.h` lines 474-480 (voltage) vs 529-536 (percentage)
