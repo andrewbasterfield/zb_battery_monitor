@@ -183,7 +183,7 @@ void app_main(void)
     // Battery percentage supports automatic reporting and will be configured by the coordinator.
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percent_zb));
 
-    uint8_t alarm_mask_zb = ESP_ZB_ZCL_POWER_CONFIG_BATTERY_ALARM_MASK_VOLTAGE_LOW | ESP_ZB_ZCL_POWER_CONFIG_BATTERY_ALARM_MASK_ALARM1 | ESP_ZB_ZCL_POWER_CONFIG_BATTERY_ALARM_MASK_ALARM2;
+    uint8_t alarm_mask_zb = ESP_ZB_ZCL_POWER_CONFIG_BATTERY_ALARM_MASK_VOLTAGE_LOW | ESP_ZB_ZCL_POWER_CONFIG_BATTERY_ALARM_MASK_ALARM1;
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID, &alarm_mask_zb));
 
     uint8_t battery_low_threshold = 10 * CRITICAL_LOW_VOLTAGE_THRESHOLD; // Set low threshold based on config.
@@ -191,9 +191,6 @@ void app_main(void)
 
     uint8_t battery_threshold1 = 10 * LOW_VOLTAGE_THRESHOLD;
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_THRESHOLD1_ID, &battery_threshold1));
-
-    uint8_t battery_threshold2 = 10 * FULLY_CHARGED_VOLTAGE_THRESHOLD;
-    ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_THRESHOLD2_ID, &battery_threshold2));
 
     ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(power_config_cluster_attributes, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_STATE_ID, &previous_alarm_state));
 
@@ -262,8 +259,6 @@ void app_main(void)
                 current_alarm_state = 0x01; // Bit 0: Battery too low (critical)
             } else if (battery_voltage < LOW_VOLTAGE_THRESHOLD) {
                 current_alarm_state = 0x02; // Bit 0: Battery too low
-            /*} else if (battery_voltage > HIGH_VOLTAGE_THRESHOLD) {
-                current_alarm_state = 0x04; // No alarm bits set (high voltage is not an alarm)*/
             } else {
                 current_alarm_state = 0x00; // OK, no alarm bits set
             }
@@ -294,7 +289,7 @@ void app_main(void)
                 ESP_LOGI(TAG, "Voltage alarm state changed to: %s",
                          (current_alarm_state == 0) ? "OK" :
                          (current_alarm_state == 1) ? "CRITICAL" :
-                         (current_alarm_state == 2) ? "LOW" : "OVER");
+                         (current_alarm_state == 2) ? "LOW" : "UNSUPPORTED");
 
                 // Update local attribute
                 ESP_ERROR_CHECK(esp_zb_zcl_set_attribute_val(HA_ESP_VOLTAGE_SENSOR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_STATE_ID, &current_alarm_state, false));

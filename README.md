@@ -7,9 +7,9 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
 -   **Voltage Monitoring:** Measures 12V lead-acid battery voltage via a voltage divider connected to the ADC.
 -   **Zigbee Reporting:**
     -   **Battery Voltage (Precise):** Automatically reports precise voltage (float) via the **Analog Input** cluster (0x000C).
-    -   **Battery Percentage:** Automatically reports estimated percentage based on configurable thresholds (12.1V - 14.8V).
+    -   **Battery Percentage:** Automatically reports estimated percentage based on AGM discharge curve (11.85V - 12.85V).
     -   **Battery Voltage (Legacy):** Reports via Power Configuration cluster (requires polling due to SDK limitations).
-    -   **Alarms:** Detects and reports Low, High, and Critical voltage states.
+    -   **Battery Alarms:** Detects and reports Critical Low and Low voltage states with real-time notifications to coordinator.
 -   **Device Roles:** Configurable as a **Router** (always on, relays messages) or **End Device** (sleeps, low power).
 -   **Simulation Mode:** Includes a software simulation mode for testing without hardware.
 
@@ -70,9 +70,9 @@ Key settings can be modified in the source files:
 -   `VOLTAGE_DIVIDER_RATIO`: Adjust this float value to match your specific resistor values.
 
 **`main/zigbee-protocol.h`:**
--   `LOW_VOLTAGE_THRESHOLD`: Voltage considered "Low".
--   `HIGH_VOLTAGE_THRESHOLD`: Voltage considered "High" (alternator charging).
--   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: Critical alarm level.
+-   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: 11.85V - Critically discharged alarm level.
+-   `LOW_VOLTAGE_THRESHOLD`: 12.2V - Low battery alarm level (~35% capacity remaining).
+-   `FULLY_CHARGED_VOLTAGE_THRESHOLD`: 12.85V - Reference point for 100% charge at rest (battery is charging above this).
 -   `MEASUREMENT_INTERVAL_MS`: How often to read the sensor.
 
 ## How It Works
@@ -83,8 +83,10 @@ Key settings can be modified in the source files:
 4.  **Data Processing:** The raw voltage is converted to a percentage and checked against alarm thresholds.
 5.  **Attribute Updates:** Both voltage and percentage attributes are updated in the Zigbee cluster whenever new measurements are taken.
 6.  **Reporting:**
-    -   **Battery Percentage:** Automatically reports to the coordinator when configured (handled by coordinator during device setup).
-    -   **Battery Voltage:** Updated locally but cannot auto-report due to SDK limitation. Can be read/polled by coordinator on demand.
+    -   **Battery Percentage:** Automatically reports to the coordinator (min 5s, max 60s, change ≥1%).
+    -   **Battery Alarm State:** Automatically reports when voltage crosses thresholds (min 1s, max 300s). Immediate manual report sent to coordinator for real-time notification.
+    -   **Analog Voltage:** Continuously reports from Analog Input cluster (min 5s, max 60s, change ≥0.1V).
+    -   **Battery Voltage (Legacy):** Updated locally but cannot auto-report due to SDK limitation.
 
 ## Zigbee2MQTT Configuration
 
@@ -97,10 +99,10 @@ This project includes a custom converter file (`esp_voltmeter.mjs`) for use with
 2. Restart zigbee2mqtt to load the new converter.
 
 **Converter Configuration:**
-- `voltage_analog` - **Primary**: Displays the precise voltage from the Analog Input cluster. Updates automatically.
-- `voltageReporting: false` - Disabled because the ESP Zigbee SDK doesn't support automatic reporting for the legacy voltage attribute.
-- `percentageReporting: true` - Enabled and working correctly.
-- The legacy `voltage` attribute is still exposed and readable, but requires manual polling.
+- `battery` - Battery percentage (0-100%) with automatic reporting enabled.
+- `battery_low` - Binary indicator of low battery condition (true when alarm state bits are set).
+- `voltage_analog` - **Primary voltage reading**: Displays precise voltage from Analog Input cluster. Read-only sensor, updates automatically.
+- `voltage` - Legacy voltage attribute in mV (readable but no auto-reporting due to SDK limitation).
 
 ## Known Issues
 

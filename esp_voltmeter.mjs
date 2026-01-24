@@ -21,6 +21,7 @@ export default {
             attribute: 'presentValue',
             description: 'Voltage (Analog Input)',
             unit: 'V',
+            precision: 2,
             access: 'STATE',  // Read-only sensor that auto-reports changes (not user-editable)
             reporting: {min: 5, max: 60, change: 0.1},
         }),
