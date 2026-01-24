@@ -19,9 +19,9 @@
 #define ESP_ZB_PRIMARY_CHANNEL_MASK ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK // Scan all channels to find a network
 
 // These thresholds define the different voltage states (in volts).
-#define LOW_VOLTAGE_THRESHOLD 12.1f    // Below this, voltage is considered "low"
-#define HIGH_VOLTAGE_THRESHOLD 14.8f   // Above this, voltage is considered "high" (e.g., alternator overcharging)
-#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.8f // Below this, voltage is critically low
+#define LOW_VOLTAGE_THRESHOLD 12.2f    // Below this, voltage is considered "low"
+#define FULLY_CHARGED_VOLTAGE_THRESHOLD 12.85f   // Fully charged at rest. Above this we are likely charging
+#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.85f // Below this, voltage is critically low
 
 /**
  * @brief Configures automatic attribute reporting to the coordinator.

@@ -12,6 +12,8 @@ export default {
             percentage: true,
             percentageReporting: true,        // percentage reporting works fine
             percentageReportingConfig: {min: 5, max: 60, change: 1},
+            lowStatus: true,                  // enable battery_low from batteryAlarmState
+            lowStatusReportingConfig: {min: 1, max: 300, change: 1},
         }),
         m.numeric({
             name: 'voltage_analog',
@@ -19,6 +21,7 @@ export default {
             attribute: 'presentValue',
             description: 'Voltage (Analog Input)',
             unit: 'V',
+            access: 'STATE',  // Read-only sensor that auto-reports changes (not user-editable)
             reporting: {min: 5, max: 60, change: 0.1},
         }),
     ],

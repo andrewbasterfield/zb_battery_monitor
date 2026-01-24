@@ -67,6 +67,7 @@ void configure_reporting(void) {
     };
 
     static uint8_t reportable_change_percentage = 2; // 1% change (in 0.5% units)
+    static uint8_t reportable_change_alarm = 1; // Report any alarm state change
 
     esp_zb_zcl_config_report_record_t records[] = {
         {
@@ -76,6 +77,14 @@ void configure_reporting(void) {
             .min_interval = 5,
             .max_interval = 60,
             .reportable_change = &reportable_change_percentage,
+        },
+        {
+            .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+            .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_STATE_ID,
+            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+            .min_interval = 1,
+            .max_interval = 300,
+            .reportable_change = &reportable_change_alarm,
         },
     };
 
