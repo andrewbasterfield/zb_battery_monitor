@@ -268,7 +268,7 @@ void app_main(void)
             battery_voltage_zb = (uint8_t)(battery_voltage * 10.0f);
 
             // Percentage is reported as 0-200 (0-100%).
-            battery_percent_zb = (battery_voltage <= CRITICAL_LOW_VOLTAGE_THRESHOLD) ? 0 :
+            battery_percent_zb = (battery_voltage <= CRITICAL_LOW_VOLTAGE_THRESHOLD) ? 1 :
                               (battery_voltage >= FULLY_CHARGED_VOLTAGE_THRESHOLD) ? 200 :
                               (uint8_t)(((battery_voltage - CRITICAL_LOW_VOLTAGE_THRESHOLD) /
                               (FULLY_CHARGED_VOLTAGE_THRESHOLD - CRITICAL_LOW_VOLTAGE_THRESHOLD)) * 200);

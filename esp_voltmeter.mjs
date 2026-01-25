@@ -1,4 +1,5 @@
 import * as m from 'zigbee-herdsman-converters/lib/modernExtend';
+import { presets as e, access as ea } from 'zigbee-herdsman-converters/lib/exposes';
 
 export default {
     zigbeeModel: ['esp32h2'],
@@ -15,6 +16,57 @@ export default {
             lowStatus: true,                  // enable battery_low from batteryAlarmState
             lowStatusReportingConfig: {min: 1, max: 300, change: 1},
         }),
+        m.numeric({
+            name: 'battery_alarm_state',
+            cluster: 'genPowerCfg',
+            attribute: 'batteryAlarmState',
+            description: 'Battery Alarm State',
+            access: 'STATE_GET',
+        }),
+        m.numeric({
+            name: 'battery_alarm_mask',
+            cluster: 'genPowerCfg',
+            attribute: 'batteryAlarmMask',
+            description: 'Battery Alarm Mask',
+            access: 'STATE_GET',
+        }),
+        {
+            isModernExtend: true,
+            exposes: [
+                e.numeric('battery_voltage_min_threshold', ea.ALL).withUnit('100mV').withDescription('Battery Voltage Minimum Threshold'),
+                e.numeric('battery_voltage_threshold1', ea.ALL).withUnit('100mV').withDescription('Battery Voltage Threshold 1'),
+            ],
+            fromZigbee: [{
+                cluster: 'genPowerCfg',
+                type: ['attributeReport', 'readResponse'],
+                convert: (model, msg, publish, options, meta) => {
+                    const payload = {};
+                    if (msg.data['batteryVoltMinThres'] !== undefined) payload.battery_voltage_min_threshold = msg.data['batteryVoltMinThres'];
+                    if (msg.data['batteryVoltThres1'] !== undefined) payload.battery_voltage_threshold1 = msg.data['batteryVoltThres1'];
+                    return payload;
+                },
+            }],
+            toZigbee: [{
+                key: ['battery_voltage_min_threshold', 'battery_voltage_threshold1'],
+                convertGet: async (entity, key, meta) => {
+                    const lookup = {
+                        'battery_voltage_min_threshold': 0x0036,
+                        'battery_voltage_threshold1': 0x0037,
+                    };
+                    await entity.read('genPowerCfg', [lookup[key]]);
+                },
+                convertSet: async (entity, key, value, meta) => {
+                     const lookup = {
+                        'battery_voltage_min_threshold': 0x0036,
+                        'battery_voltage_threshold1': 0x0037,
+                    };
+                    await entity.write('genPowerCfg', {[lookup[key]]: {value: value, type: 0x20}});
+                },
+            }],
+            configure: [
+                m.setupConfigureForReading('genPowerCfg', [54, 55]),
+            ],
+        },
         m.numeric({
             name: 'voltage_analog',
             cluster: 'genAnalogInput',
