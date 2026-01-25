@@ -130,7 +130,7 @@ float adc_sensor_read_voltage(void)
 {
 #if USE_SIMULATED_VOLTAGE
     // --- SIMULATED VOLTAGE (for testing) ---
-    simulated_voltage -= 0.5f;
+    simulated_voltage -= 0.1f;
     if (simulated_voltage < 11.5f) {
         simulated_voltage = 15.0f; // Reset to a high voltage
     }
