@@ -49,22 +49,16 @@ export default {
             toZigbee: [{
                 key: ['battery_voltage_min_threshold', 'battery_voltage_threshold1'],
                 convertGet: async (entity, key, meta) => {
-                    const lookup = {
-                        'battery_voltage_min_threshold': 0x0036,
-                        'battery_voltage_threshold1': 0x0037,
-                    };
+                    const lookup = {'battery_voltage_min_threshold': 'batteryVoltMinThres', 'battery_voltage_threshold1': 'batteryVoltThres1'};
                     await entity.read('genPowerCfg', [lookup[key]]);
                 },
                 convertSet: async (entity, key, value, meta) => {
-                     const lookup = {
-                        'battery_voltage_min_threshold': 0x0036,
-                        'battery_voltage_threshold1': 0x0037,
-                    };
-                    await entity.write('genPowerCfg', {[lookup[key]]: {value: value, type: 0x20}});
+                    const lookup = {'battery_voltage_min_threshold': 'batteryVoltMinThres', 'battery_voltage_threshold1': 'batteryVoltThres1'};
+                    await entity.write('genPowerCfg', {[lookup[key]]: value});
                 },
             }],
             configure: [
-                m.setupConfigureForReading('genPowerCfg', [54, 55]),
+                m.setupConfigureForReading('genPowerCfg', ['batteryVoltMinThres', 'batteryVoltThres1', 'batteryAlarmMask']),
             ],
         },
         m.numeric({

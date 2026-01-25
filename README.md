@@ -10,6 +10,7 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
     -   **Battery Percentage:** Automatically reports estimated percentage based on AGM discharge curve (11.85V - 12.85V).
     -   **Battery Voltage (Legacy):** Reports via Power Configuration cluster (requires polling due to SDK limitations).
     -   **Battery Alarms:** Detects and reports Critical Low and Low voltage states with real-time notifications to coordinator.
+    -   **Dynamic Configuration:** Alarm thresholds and masks are configurable via Zigbee and persist across reboots (saved to NVS).
 -   **Device Roles:** Configurable as a **Router** (always on, relays messages) or **End Device** (sleeps, low power).
 -   **Simulation Mode:** Includes a software simulation mode for testing without hardware.
 
@@ -70,18 +71,28 @@ Key settings can be modified in the source files:
 -   `VOLTAGE_DIVIDER_RATIO`: Adjust this float value to match your specific resistor values.
 
 **`main/zigbee-protocol.h`:**
--   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: 11.85V - Critically discharged alarm level.
--   `LOW_VOLTAGE_THRESHOLD`: 12.2V - Low battery alarm level (~35% capacity remaining).
--   `FULLY_CHARGED_VOLTAGE_THRESHOLD`: 12.85V - Reference point for 100% charge at rest (battery is charging above this).
+-   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: Default 11.85V (configurable via Zigbee).
+-   `LOW_VOLTAGE_THRESHOLD`: Default 12.2V (configurable via Zigbee).
+-   `FULLY_CHARGED_VOLTAGE_THRESHOLD`: 12.85V - Reference point for 100% charge calculation.
 -   `MEASUREMENT_INTERVAL_MS`: How often to read the sensor.
+
+## Dynamic Configuration (Zigbee2MQTT)
+
+The device supports changing alarm thresholds at runtime. These settings are saved to non-volatile storage (NVS) and persist after a reboot.
+
+-   **`battery_voltage_min_threshold`**: Sets the critical low voltage alarm threshold (unit: 100mV). Example: `118` = 11.8V.
+-   **`battery_voltage_threshold1`**: Sets the low voltage warning threshold (unit: 100mV). Example: `122` = 12.2V.
+-   **`battery_alarm_mask`**: Configures which alarms are enabled (Bitmask).
+
+To change these, go to the **Exposes** tab in Zigbee2MQTT (or use the Dev Console to write to the `genPowerCfg` cluster).
 
 ## How It Works
 
-1.  **Initialization:** The app initializes NVS, the ADC sensor, and the Zigbee stack.
-2.  **Zigbee Setup:** It registers a "Power Configuration" cluster with battery voltage and percentage attributes.
-3.  **Measurement Loop:** A FreeRTOS task (`voltage_measurement_task`) wakes up periodically to read the voltage (or simulate it).
-4.  **Data Processing:** The raw voltage is converted to a percentage and checked against alarm thresholds.
-5.  **Attribute Updates:** Both voltage and percentage attributes are updated in the Zigbee cluster whenever new measurements are taken.
+1.  **Initialization:** The app initializes NVS, loads stored thresholds (or defaults), sets up the ADC, and starts the Zigbee stack.
+2.  **Zigbee Setup:** It registers a "Power Configuration" cluster with voltage, percentage, and configurable threshold attributes.
+3.  **Measurement Loop:** A FreeRTOS task (`voltage_measurement_task`) wakes up periodically to read the voltage.
+4.  **Data Processing:** The raw voltage is converted to a percentage and checked against the *current* alarm thresholds.
+5.  **Persistence:** If you update a threshold via Zigbee, the device intercepts the write command, updates the active value, and saves it to NVS.
 6.  **Reporting:**
     -   **Battery Percentage:** Automatically reports to the coordinator (min 5s, max 60s, change ≥1%).
     -   **Battery Alarm State:** Automatically reports when voltage crosses thresholds (min 1s, max 300s). Immediate manual report sent to coordinator for real-time notification.

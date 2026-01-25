@@ -6,6 +6,8 @@ typedef void (*esp_zb_zcl_command_send_status_callback_t)(esp_zb_zcl_command_sen
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "esp_check.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 #include "zigbee-protocol.h"
 #include "zcl/esp_zigbee_zcl_command.h"  // Include after other headers
@@ -67,7 +69,7 @@ void configure_reporting(void) {
     };
 
     static uint8_t reportable_change_percentage = 2; // 1% change (in 0.5% units)
-    static uint8_t reportable_change_alarm = 1; // Report any alarm state change
+    static uint32_t reportable_change_alarm = 1; // Report any alarm state change
 
     esp_zb_zcl_config_report_record_t records[] = {
         {
@@ -81,7 +83,7 @@ void configure_reporting(void) {
         {
             .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
             .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_STATE_ID,
-            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+            .attrType = ESP_ZB_ZCL_ATTR_TYPE_32BITMAP,
             .min_interval = 1,
             .max_interval = 300,
             .reportable_change = &reportable_change_alarm,
@@ -242,7 +244,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
  * @brief Handles incoming ZCL attribute write commands.
  *
  * This function is called when a remote Zigbee device (like a coordinator)
- * writes to an attribute on this device. Currently, it only logs the event.
+ * writes to an attribute on this device.
+ * 
+ * It intercepts writes to the Power Configuration cluster attributes to implement
+ * data persistence. When a threshold or alarm mask is updated remotely, this
+ * handler saves the new value to Non-Volatile Storage (NVS) so it can be 
+ * restored after a reboot.
  *
  * @param message A pointer to the message containing attribute information.
  * @return ESP_OK on success, or an error code on failure.
@@ -257,8 +264,39 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
     ESP_LOGI(TAG, "Received ZCL attribute(0x%x) set to cluster(0x%x)",
              message->attribute.id, message->info.cluster);
 
-    // Future logic to handle attribute writes can be added here.
-    // For example, changing a configuration parameter.
+    // Persistence Logic: Intercept writes to Power Configuration Cluster
+    if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG) {
+        if (message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID ||
+            message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID ||
+            message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_THRESHOLD1_ID) {
+
+            nvs_handle_t my_handle;
+            esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+            if (err == ESP_OK) {
+                // Extract value from the message (u8 type)
+                uint8_t val = *(uint8_t*)message->attribute.data.value;
+                const char* key = "";
+                
+                // Map Attribute ID to NVS Key
+                if (message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_ALARM_MASK_ID) key = "alarm_mask";
+                else if (message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_MIN_THRESHOLD_ID) key = "min_thresh";
+                else if (message->attribute.id == ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_THRESHOLD1_ID) key = "thresh1";
+
+                // Save to NVS
+                err = nvs_set_u8(my_handle, key, val);
+                if (err == ESP_OK) {
+                    err = nvs_commit(my_handle);
+                    if (err == ESP_OK) {
+                        ESP_LOGI(TAG, "Saved attribute 0x%x value %d to NVS key '%s'", message->attribute.id, val, key);
+                    }
+                }
+                nvs_close(my_handle);
+            }
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to save attribute to NVS: %s", esp_err_to_name(err));
+            }
+        }
+    }
 
     return ret;
 }
