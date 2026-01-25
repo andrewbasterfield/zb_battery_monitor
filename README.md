@@ -7,7 +7,7 @@ A Zigbee-enabled battery monitor based on the ESP32-H2. This device monitors 12V
 -   **Voltage Monitoring:** Measures 12V lead-acid battery voltage via a voltage divider connected to the ADC.
 -   **Zigbee Reporting:**
     -   **Battery Voltage (Precise):** Automatically reports precise voltage (float) via the **Analog Input** cluster (0x000C).
-    -   **Battery Percentage:** Automatically reports estimated percentage based on AGM discharge curve (11.85V - 12.85V).
+    -   **Battery Percentage:** Automatically reports estimated percentage based on AGM discharge curve (11.8V - 12.8V).
     -   **Battery Voltage (Legacy):** Reports via Power Configuration cluster (requires polling due to SDK limitations).
     -   **Battery Alarms:** Detects and reports Critical Low and Low voltage states with real-time notifications to coordinator.
     -   **Dynamic Configuration:** Alarm thresholds and masks are configurable via Zigbee and persist across reboots (saved to NVS).
@@ -71,9 +71,9 @@ Key settings can be modified in the source files:
 -   `VOLTAGE_DIVIDER_RATIO`: Adjust this float value to match your specific resistor values.
 
 **`main/zigbee-protocol.h`:**
--   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: Default 11.85V (configurable via Zigbee).
+-   `CRITICAL_LOW_VOLTAGE_THRESHOLD`: Default 11.8V (configurable via Zigbee).
 -   `LOW_VOLTAGE_THRESHOLD`: Default 12.2V (configurable via Zigbee).
--   `FULLY_CHARGED_VOLTAGE_THRESHOLD`: 12.85V - Reference point for 100% charge calculation.
+-   `FULLY_CHARGED_VOLTAGE_THRESHOLD`: 12.8V - Reference point for 100% charge calculation.
 -   `MEASUREMENT_INTERVAL_MS`: How often to read the sensor.
 
 ## Dynamic Configuration (Zigbee2MQTT)

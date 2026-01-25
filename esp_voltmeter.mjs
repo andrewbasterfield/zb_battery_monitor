@@ -16,6 +16,17 @@ export default {
             lowStatus: true,                  // enable battery_low from batteryAlarmState
             lowStatusReportingConfig: {min: 1, max: 300, change: 1},
         }),
+        m.poll({
+            key: 'legacy_battery_voltage',
+            defaultIntervalSeconds: 60,
+            poll: async (device) => {
+                try {
+                    await device.getEndpoint(1).read('genPowerCfg', ['batteryVoltage']);
+                } catch (error) {
+                    // Fail silently to avoid log spam
+                }
+            },
+        }),
         m.numeric({
             name: 'battery_alarm_state',
             cluster: 'genPowerCfg',

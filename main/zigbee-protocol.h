@@ -9,7 +9,7 @@
 #define MODEL_IDENTIFIER "\x07" CONFIG_IDF_TARGET
 
 // --- Hardware Configuration ---
-#define MEASUREMENT_INTERVAL_MS 5000           // Interval between voltage measurements in milliseconds
+#define MEASUREMENT_INTERVAL_MS 7500           // Interval between voltage measurements in milliseconds
 
 // --- Zigbee Configuration ---
 #define INSTALLCODE_POLICY_ENABLE false // Set to true to enable install code policy for joining, false to disable
@@ -20,8 +20,8 @@
 
 // These thresholds define the different voltage states (in volts).
 #define LOW_VOLTAGE_THRESHOLD 12.2f    // Below this, voltage is considered "low"
-#define FULLY_CHARGED_VOLTAGE_THRESHOLD 12.85f   // Fully charged at rest. Above this we are likely charging
-#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.85f // Below this, voltage is critically low
+#define FULLY_CHARGED_VOLTAGE_THRESHOLD 12.8f   // Fully charged at rest. Above this we are likely charging
+#define CRITICAL_LOW_VOLTAGE_THRESHOLD 11.8f // Below this, voltage is critically low
 
 /**
  * @brief Configures automatic attribute reporting to the coordinator.
